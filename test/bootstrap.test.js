@@ -178,6 +178,8 @@ test("disable discards pending scans and re-enable starts a fresh traversal", as
     observedShadowRoots: 0,
     shadowCoverageLimited: false,
     cooldownNodes: 0,
+    conflictRatePerSecond: 1000,
+    conflictBurst: 1000,
   });
   controllers[0].flushForTest();
   assert.equal(dom.window.document.querySelector("p").textContent.endsWith("Jan 1"), true);

@@ -81,6 +81,9 @@ test("popup uses one labeled native checkbox and adaptive system colors", () => 
   assert.match(popupCss, /color-scheme:\s*light dark/);
   assert.match(popupCss, /background:\s*Canvas/);
   assert.match(popupCss, /color:\s*CanvasText/);
+  assert.match(popupCss, /body\s*{[^}]*min-width:\s*20rem/s);
+  assert.match(popupCss, /body\s*{[^}]*min-inline-size:\s*20rem/s);
+  assert.match(popupCss, /main\s*{[^}]*inline-size:\s*100%/s);
   assert.doesNotMatch(popupCss, /appearance\s*:/i);
   assert.doesNotMatch(popupCss, /#(?:000(?:000)?|fff(?:fff)?)\b/i);
   dom.window.close();

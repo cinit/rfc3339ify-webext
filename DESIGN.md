@@ -581,7 +581,7 @@ Extension writes also create `characterData` records. Use these structures:
 
 - `pendingWrites: WeakMap<Text, string>` holds the expected value only from an extension write until the next coalesced observer delivery for that node;
 - `normalizedNodes: WeakSet<Text>` records that the node has previously received an extension write, without duplicating its text; and
-- conflict timestamps exist only for nodes that actually enter the section-10.1 rate guard.
+- conflict token-bucket state exists only for nodes that actually enter the section-10.1 rate guard.
 
 Coalesce all records for one text node before classification. If `pendingWrites.has(node)` and its current value equals `pendingWrites.get(node)`, delete the pending entry and skip the self-generated work. If a pending entry exists but the value differs, delete it and process the current value once as an external change. A later record without a pending entry is likewise external, but it counts toward the rate guard only when `normalizedNodes.has(node)` and transformation would require another write. This bounds duplicate string retention to the observer-delivery interval rather than the lifetime of every normalized node. Weak keys ensure removed nodes do not stay alive.
 
@@ -855,15 +855,18 @@ The extension must not pretend it can make DOM mutation consequence-free. Possib
 
 A per-node rate guard prevents an extension/extension or extension/page ping-pong from consuming the main thread. It counts only **external overwrites**: after the extension has normalized a node, the page or another extension changes that same node to a value that would require another extension write. Initial normalization and observer records caused by the extension's own `Text.data` write do not count.
 
-Use test-calibrated constants with these initial semantics:
+Use these initial semantics:
 
-- four external overwrites within a rolling two-second window are allowed;
-- the next attempted rewrite enters a ten-second cooldown and leaves the current page value unchanged;
+- each node has an independent token bucket with capacity 1,000 and a refill rate of 1,000 external overwrites per second;
+- initial normalization, self-generated mutation records, different nodes, and external changes that do not need an extension write consume no tokens;
+- when the bucket has less than one token, the next attempted rewrite enters a ten-second cooldown and leaves the current page value unchanged;
 - one shared, one-shot scheduler retries the node after cooldown rather than running a periodic timer;
-- retry resets the short-window count and processes the then-current value once;
+- retry resets the bucket and processes the then-current value once;
 - a new external overwrite after another conflict can start a new cooldown;
 - disconnected nodes are discarded; and
-- cooldown state is document-local, contains no text/history beyond timestamps and the node reference, and is cleared when the document is destroyed.
+- guard state is document-local, contains only a token count/refill timestamp or cooldown deadline plus the weak/capped node reference, and is cleared when the document is destroyed.
+
+The bucket permits a burst of 1,000 rewrites and then sustains 1,000 per second. Only a faster same-node ping-pong exhausts it. This deliberately avoids penalizing management consoles such as Proxmox VE that append or replace many independent log-event nodes every second. A constant-size bucket also avoids retaining an exact rolling list of up to 1,000 timestamps for every active node.
 
 The shared scheduler uses a `Map` capped at 1,024 cooldown nodes so it can enumerate due retries without retaining an unbounded number of DOM nodes. If that cap is reached, additional conflicting nodes are left unchanged until a later external mutation requeues them; normal non-conflicting nodes continue to work. Tests must cover cooldown recovery, cap behavior, disconnected-node cleanup, and framework reuse of the same `Text` node for unrelated later content.
 
@@ -1020,7 +1023,7 @@ Popup tests must cover:
 - preservation of the browser-native checkbox appearance, including checked, unchecked, indeterminate, disabled, and focus-visible states;
 - initial loading/indeterminate state, default enabled state, saved on/off confirmation, malformed-value repair, external `storage.onChanged` updates while open, and rapid interaction serialization;
 - read failure and write failure: never show an unconfirmed state as saved, revert to the last confirmed state when possible, expose a visible error, and permit an explicit retry;
-- responsive layout at desktop popup widths and Firefox Android's full-window overlay, at 200% text zoom and in browser/OS light and dark color schemes;
+- a 20rem minimum intrinsic popup width on both Chromium and Firefox desktop, plus responsive layout in Firefox Android's full-window overlay, at 200% text zoom and in browser/OS light and dark color schemes;
 - automatic `Canvas`/`CanvasText` and native form-control adaptation with no hard-coded black/white palette, forced theme, or unreadable transition state;
 - at least a 48 CSS-pixel tap target, no hover-only disclosure, and operation with touch and keyboard/switch-control input; and
 - no auto-close after a change, network request, inline script, page/tab query, hostname display, badge update, or dynamic icon mutation.
@@ -1138,7 +1141,8 @@ In Firefox Android MV3, the action is reached from Firefox's menu through Add-on
 
 The layout must:
 
-- be responsive rather than set a desktop-only fixed width;
+- set `body { min-width: 20rem; min-inline-size: 20rem; }` so Chromium and Firefox desktop cannot shrink the popup below a usable width, with the physical property retained as a conservative popup-sizing fallback;
+- let the Android overlay/body expand to its available viewport, while centering `main` at `inline-size: 100%` with a 22rem readable maximum;
 - keep the labeled checkbox row at least 48 CSS pixels high and make the entire row the touch target;
 - use system fonts, logical CSS properties, and browser/OS system colors;
 - declare `color-scheme: light dark` so the background, text, native checkbox, buttons, and focus indicators automatically follow the active light/dark scheme;
@@ -1156,8 +1160,16 @@ The preferred CSS baseline is intentionally small:
 }
 
 body {
+  min-width: 20rem;
+  min-inline-size: 20rem;
   color: CanvasText;
   background: Canvas;
+}
+
+main {
+  inline-size: 100%;
+  max-inline-size: 22rem;
+  margin-inline: auto;
 }
 ```
 

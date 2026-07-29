@@ -54,6 +54,9 @@ test("initial traversal transforms eligible text and preserves DOM identity", ()
   const controller = start(dom);
   controller.flushForTest();
 
+  assert.equal(controller.getStats().conflictRatePerSecond, 1000);
+  assert.equal(controller.getStats().conflictBurst, 1000);
+
   assert.strictEqual(document.querySelector("#ordinary"), ordinary);
   assert.strictEqual(ordinary.firstChild, ordinaryText);
   assert.equal(ordinary.textContent, "1990-01-01 at 13:00");
@@ -193,9 +196,16 @@ test("dynamic additions, character changes, and eligibility transitions converge
 
 test("extension writes do not loop and adversarial overwrites enter cooldown", async () => {
   let clock = 100;
-  const dom = makeDom("<!doctype html><body><p id='value'>Jan 1</p></body>");
+  const dom = makeDom(`<!doctype html><body>
+    <p id="value">Jan 1</p><p id="other">Feb 2</p>
+  </body>`);
   const node = dom.window.document.querySelector("#value").firstChild;
-  const controller = start(dom, { now: () => clock });
+  const otherNode = dom.window.document.querySelector("#other").firstChild;
+  const controller = start(dom, {
+    now: () => clock,
+    conflictRatePerSecond: 4,
+    conflictBurst: 4,
+  });
   controller.flushForTest();
   assert.equal(node.data, "01-01");
 
@@ -205,18 +215,21 @@ test("extension writes do not loop and adversarial overwrites enter cooldown", a
   assert.equal(controller.getStats().cooldownNodes, 0);
 
   for (let overwrite = 0; overwrite < 4; overwrite += 1) {
-    clock += 100;
     node.data = "Jan 1";
     await deliverMutations();
     controller.flushForTest();
     assert.equal(node.data, "01-01", `allowed overwrite ${overwrite + 1}`);
   }
-  clock += 100;
   node.data = "Jan 1";
   await deliverMutations();
   controller.flushForTest();
   assert.equal(node.data, "Jan 1");
   assert.equal(controller.getStats().cooldownNodes, 1);
+
+  otherNode.data = "Mar 3";
+  await deliverMutations();
+  controller.flushForTest();
+  assert.equal(otherNode.data, "03-03", "another node has an independent bucket");
 
   clock += 10_001;
   controller.retryCooldownsForTest();

@@ -7,14 +7,17 @@
 
 body {
   margin: 0;
+  min-width: 20rem;
+  min-inline-size: 20rem;
   background: Canvas;
   color: CanvasText;
 }
 
 main {
   box-sizing: border-box;
-  inline-size: min(22rem, 100vw);
-  max-inline-size: 100%;
+  inline-size: 100%;
+  max-inline-size: 22rem;
+  margin-inline: auto;
   padding: 1rem;
 }
 

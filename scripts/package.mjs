@@ -184,6 +184,8 @@ async function loadReleaseSources() {
     } else if (file.name === "popup.css") {
       const source = data.toString("utf8");
       assert.match(source, /color-scheme:\s*light dark/);
+      assert.match(source, /body\s*{[^}]*min-width:\s*20rem/s);
+      assert.match(source, /body\s*{[^}]*min-inline-size:\s*20rem/s);
       assert.doesNotMatch(source, /appearance\s*:\s*none/i);
       assert.doesNotMatch(source, /#(?:000(?:000)?|fff(?:fff)?)\b/i,
         "popup.css contains a hard-coded black/white color");

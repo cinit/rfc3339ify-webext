@@ -28,8 +28,8 @@
     const MAX_WORK_ITEMS_PER_SLICE = 256;
     const SCANNER_STEPS_PER_WORK_ITEM = 64;
     const SLICE_TARGET_MS = 2;
-    const CONFLICT_WINDOW_MS = 2000;
-    const ALLOWED_EXTERNAL_OVERWRITES = 4;
+    const DEFAULT_CONFLICT_RATE_PER_SECOND = 1000;
+    const DEFAULT_CONFLICT_BURST = 1000;
     const CONFLICT_COOLDOWN_MS = 10000;
 
     const HTML_NAMESPACE = "http://www.w3.org/1999/xhtml";
@@ -69,6 +69,11 @@
     }
 
     const manualScheduling = options.manualScheduling === true;
+    const conflictRatePerSecond = Number.isFinite(options.conflictRatePerSecond) &&
+      options.conflictRatePerSecond > 0 ?
+      options.conflictRatePerSecond : DEFAULT_CONFLICT_RATE_PER_SECOND;
+    const conflictBurst = Number.isSafeInteger(options.conflictBurst) &&
+      options.conflictBurst > 0 ? options.conflictBurst : DEFAULT_CONFLICT_BURST;
     const now = typeof options.now === "function" ? options.now : () => {
       if (windowObject.performance && typeof windowObject.performance.now === "function") {
         return windowObject.performance.now();
@@ -95,7 +100,7 @@
     const activeTextTasks = new WeakMap();
     const pendingWrites = new WeakMap();
     const normalizedNodes = new WeakSet();
-    const conflictHistory = new WeakMap();
+    const conflictBuckets = new WeakMap();
     const cooldownNodes = new Map();
 
     function syncRootEntryEpoch(rootState) {
@@ -486,16 +491,17 @@
       if (cooldown && cooldown.deadline > currentTime) return false;
       if (cooldown) cooldownNodes.delete(node);
 
-      let history = conflictHistory.get(node);
-      if (!history) history = [];
-      let firstRecent = 0;
-      while (firstRecent < history.length &&
-        history[firstRecent] <= currentTime - CONFLICT_WINDOW_MS) {
-        firstRecent += 1;
+      let bucket = conflictBuckets.get(node);
+      if (!bucket) {
+        bucket = { tokens: conflictBurst, updatedAt: currentTime };
+      } else {
+        const elapsed = Math.max(0, currentTime - bucket.updatedAt);
+        bucket.tokens = Math.min(conflictBurst,
+          bucket.tokens + elapsed * conflictRatePerSecond / 1000);
+        bucket.updatedAt = currentTime;
       }
-      if (firstRecent > 0) history = history.slice(firstRecent);
-      if (history.length >= ALLOWED_EXTERNAL_OVERWRITES) {
-        conflictHistory.delete(node);
+      if (bucket.tokens < 1) {
+        conflictBuckets.delete(node);
         if (cooldownNodes.size < MAX_COOLDOWN_NODES) {
           const deadline = currentTime + CONFLICT_COOLDOWN_MS;
           cooldownNodes.set(node, { deadline });
@@ -503,8 +509,8 @@
         }
         return false;
       }
-      history.push(currentTime);
-      conflictHistory.set(node, history);
+      bucket.tokens -= 1;
+      conflictBuckets.set(node, bucket);
       return true;
     }
 
@@ -683,7 +689,7 @@
       if (node.nodeType === 3) {
         if (!node.isConnected) {
           cooldownNodes.delete(node);
-          conflictHistory.delete(node);
+          conflictBuckets.delete(node);
           pendingWrites.delete(node);
           normalizedNodes.delete(node);
           activeTextTasks.delete(node);
@@ -762,10 +768,10 @@
         const [node, entry] = next.value;
         if (!node.isConnected) {
           cooldownNodes.delete(node);
-          conflictHistory.delete(node);
+          conflictBuckets.delete(node);
         } else if (entry.deadline <= now()) {
           cooldownNodes.delete(node);
-          conflictHistory.delete(node);
+          conflictBuckets.delete(node);
           const rootState = currentRootStateForNode(node);
           if (rootState) enqueueTextNode(rootState, node, false);
         } else {
@@ -913,6 +919,8 @@
           observedShadowRoots,
           shadowCoverageLimited,
           cooldownNodes: cooldownNodes.size,
+          conflictRatePerSecond,
+          conflictBurst,
         });
       },
     });

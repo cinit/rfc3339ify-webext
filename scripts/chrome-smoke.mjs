@@ -246,6 +246,8 @@ try {
   await cdp.send("Runtime.enable", {}, popupSessionId);
   await waitForValue(cdp, popupSessionId,
     "document.querySelector('#global-enabled')?.checked", true);
+  await waitForValue(cdp, popupSessionId,
+    "getComputedStyle(document.body).minWidth", "320px");
   await evaluate(cdp, popupSessionId,
     "document.querySelector('#global-enabled').click()");
   await waitForValue(cdp, popupSessionId,
