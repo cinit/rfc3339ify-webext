@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "RFC3339ify",
+  "version": "0.1.0",
+  "description": "Normalizes selected English dates and 12-hour times in rendered HTML and XHTML page text.",
+  "minimum_chrome_version": "99",
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "transform.js",
+        "content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true,
+      "match_about_blank": true,
+      "match_origin_as_fallback": true
+    }
+  ]
+}

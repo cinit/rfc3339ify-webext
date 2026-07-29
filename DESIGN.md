@@ -1,6 +1,6 @@
 # RFC3339ify WebExtension: detailed design
 
-Status: Implementation-ready; release validation gates remain
+Status: Initial implementation complete; release validation gates remain
 
 Date: 2026-07-29
 
@@ -79,7 +79,7 @@ One requested target is not currently feasible: official Google Chrome on Androi
 | Android Chromium forks with extension support | Unsupported | May work, but their manifest/API/store compatibility and maintenance are outside the threat model and release matrix. |
 | Safari/iOS | Out of scope | Would require a separate packaging, signing, and compatibility effort. |
 
-The core uses only mature DOM APIs (`TreeWalker`, `MutationObserver`, `WeakMap`, and ordinary string operations). Browser-specific code should be confined to generated manifests and packaging metadata.
+The core uses only mature DOM APIs (`MutationObserver`, DOM parent/sibling traversal, `WeakMap`, and ordinary string operations). Browser-specific code is confined to generated manifests, packaging metadata, and development-only browser tests.
 
 ### 4.1 Firefox Android manifest decision
 
@@ -283,12 +283,13 @@ Fractional seconds are out of scope. For refusal, the recognizer uses this broad
 
 ```text
 TIME_FIELD    := DIGIT_RUN
-time-envelope := TIME_FIELD ":" TIME_FIELD
-                 [":" TIME_FIELD ["." DIGIT_RUN]]
+REFUSAL_FIELD := zero or more ASCII digits
+time-envelope := TIME_FIELD (":" REFUSAL_FIELD)+
+                 ["." DIGIT_RUN]
                  WSP* MERIDIEM_LIKE
 ```
 
-The starting and ending Unicode boundaries in section 6.4 apply to the structural envelope. A failed starting boundary produces `NO_MATCH`; after a valid start, a failed ending boundary refuses the recognized envelope. `time12` is the accepted subset. A structural envelope that has an invalid field width/value, more than eight whitespace characters, a fractional suffix, a merely meridiem-like token not in `MERIDIEM`, or a failed ending boundary returns `REFUSE` through the end of `MERIDIEM_LIKE`. Thus `07:59:59.123 AM`, `13:00 PM`, `07:59 P.M.`, and `07:59         AM` are unchanged as wholes. `DIGIT_RUN` and `WSP*` can be arbitrarily long, so their recognition must participate in the resumable scan described in section 11.2.
+The starting and ending Unicode boundaries in section 6.4 apply to the structural envelope. A failed starting boundary produces `NO_MATCH`; after a valid start, a failed ending boundary refuses the recognized envelope. `time12` is the accepted subset. The wider refusal form deliberately recognizes empty or extra colon fields so malformed input such as `01::03:04 PM` or `01:02:03:04 PM` cannot expose a plausible inner time. A structural envelope that has the wrong number of fields, an empty field, an invalid field width/value, more than eight whitespace characters, a fractional suffix, a merely meridiem-like token not in `MERIDIEM`, or a failed ending boundary returns `REFUSE` through the end of `MERIDIEM_LIKE`. Thus `07:59:59.123 AM`, `13:00 PM`, `07:59 P.M.`, and `07:59         AM` are unchanged as wholes. `DIGIT_RUN`, repeated colon fields, and `WSP*` can be arbitrarily long, so their recognition must participate in the resumable scan described in section 11.2.
 
 ### 6.4 Boundaries, envelopes, and refusal
 
@@ -414,7 +415,7 @@ start document MutationObserver
 queue initial document + discover open shadow roots
         |
         v
-TreeWalker yields eligible Text nodes
+bounded iterative DOM cursor yields Text nodes
         |
         v
 pure resumable transform of Text.data
@@ -482,20 +483,15 @@ Do not use `innerHTML`, `outerHTML`, `innerText`, or `outerText` setters. Updati
 
 Immediately after the MIME gate, create and start the document `MutationObserver` before queuing or traversing initial content. JavaScript on the page cannot interleave inside that setup task, and every mutation after observer registration is therefore either visited by the initial walk or retained as mutation work. When an open shadow root is discovered, start its observer before queuing its traversal for the same reason.
 
-Create a `TreeWalker` with `NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT`. Its filter:
+Use an explicit iterative depth-first cursor. Each cursor owns a stack of frames containing only the next sibling at that depth. One work item either visits one element/text node or pops one exhausted frame. For an element, it checks exclusion and open-shadow discovery before adding a child frame; for a text node, it queues the node-local transform. No recursion is used.
 
-- returns `FILTER_REJECT` for excluded elements, pruning their descendants;
-- inspects non-excluded elements for an open `shadowRoot`, registers and queues a newly discovered root, and returns `FILTER_SKIP` so traversal continues into light-DOM children;
-- returns `FILTER_SKIP` for every other non-excluded element; and
-- returns `FILTER_ACCEPT` for text nodes.
-
-The drain consumes only accepted text nodes. Using `SHOW_TEXT` alone would be insufficient because the filter would never see an excluded element and therefore could not prune that subtree.
+This is intentionally more explicit than `TreeWalker.nextNode()`: a browser may internally advance across an arbitrary number of `FILTER_SKIP`/`FILTER_REJECT` nodes before returning, which would hide page-controlled work inside one scheduling step. The frame cursor makes the one-node/one-hop work accounting testable, including on a document with millions of elements but no text. Intrinsic non-content and known editor subtrees may be pruned. Editable ancestry is checked per text node because a nested `contenteditable="false"` can end inherited editability.
 
 Traversal is incremental. A drain performs work until either a node-count limit or a short elapsed-time budget is reached, then yields via `requestIdleCallback` where available, with a bounded-time fallback based on `setTimeout`. It must not use an unbounded microtask loop because that can starve rendering and input.
 
 Initial tuning constants, to be verified on Android hardware, are:
 
-- at most 256 work items in one slice, where a TreeWalker step, mutation-record conversion, queued-node decision, or bounded lexer step group is a work item even when it produces no accepted text;
+- at most 256 work items in one slice, where a DOM cursor node/frame step, mutation-record conversion, queued-node decision, composed-ancestor hop, or bounded lexer step group is a work item even when it produces no accepted text;
 - at most 2 ms of extension work in one foreground slice on every platform, avoiding user-agent detection;
 - an idle callback timeout so a continuously busy page still converges; and
 - no whole-document rescan in response to an ordinary subtree mutation.
@@ -601,7 +597,8 @@ test/
   dom.test.js
   fixtures/
 scripts/
-  package.mjs           deterministic packaging, if needed
+  package.mjs           deterministic packaging and artifact audit
+  chrome-smoke.mjs      development-only real-browser smoke test
 ```
 
 The implementation may combine the two source files in a release without minification, but the source boundaries should remain visible. A bundler is unnecessary if files are listed in dependency order in `content_scripts.js` or a small checked-in build is generated deterministically.
@@ -635,7 +632,7 @@ The Firefox artifact uses the same `content_scripts` block, omits Chrome's `mini
 {
   "browser_specific_settings": {
     "gecko": {
-      "id": "rfc3339ify@example.invalid",
+      "id": "{5f52c973-693d-43f8-92f5-9644965786c6}",
       "strict_min_version": "140.0",
       "data_collection_permissions": {
         "required": ["none"]
@@ -648,7 +645,7 @@ The Firefox artifact uses the same `content_scripts` block, omits Chrome's `mini
 }
 ```
 
-The identifier shown is a placeholder. Select a stable, non-personal identifier before the first signed build and never change it afterward. The explicit minimum versions implement the compatibility decision in section 4.1 and allow Mozilla's linter to evaluate desktop and Android separately. `required: ["none"]` declares the design's no-data-collection behavior; adding another data category requires security and privacy review. The `gecko_android` entry both makes Android availability explicit and prevents installation below the tested Android floor.
+The implementation has selected the stable, non-personal UUID shown above. Do not change it after the first signed build. The explicit minimum versions implement the compatibility decision in section 4.1 and allow Mozilla's linter to evaluate desktop and Android separately. `required: ["none"]` declares the design's no-data-collection behavior; adding another data category requires security and privacy review. The `gecko_android` entry both makes Android availability explicit and prevents installation below the tested Android floor.
 
 Keep Firefox-specific keys out of the Chrome artifact if Chrome's validator warns about them. Manifest generation must be deterministic and tested against both store validators.
 
@@ -935,7 +932,7 @@ If npm dependencies are introduced:
 
 ### 13.3 Distribution
 
-Distribution depends on Chrome Web Store and Mozilla Add-ons developer accounts, current store-policy acceptance, signing services, stable extension identifiers, and the stores' continued support for the selected manifests and platforms. Before the first release, prepare the required icons/listing assets, source and license notices, a plain-language privacy disclosure, support contact, and reproducible-build instructions.
+Distribution depends on Chrome Web Store and Mozilla Add-ons developer accounts, current store-policy acceptance, signing services, stable extension identifiers, and the stores' continued support for the selected manifests and platforms. Before the first release, the owner must choose the source license; then prepare its required notices along with icons/listing assets, a plain-language privacy disclosure, support contact, and reproducible-build instructions. The implementation repository remains marked `UNLICENSED` until that explicit legal choice is made.
 
 The CI-produced unsigned ZIPs are the reproducibility baseline. Store-signed CRX/XPI files may contain signatures or store-generated metadata, so verification compares their executable/resource payload against the baseline and separately inventories every store-added entry. Android availability, version compatibility, and permission presentation must be checked on the published AMO listing, not only with a temporarily loaded extension.
 
@@ -1013,8 +1010,21 @@ The first release is acceptable when:
 - [MDN: `host_permissions`](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/manifest.json/host_permissions)
 - [MDN: `Document.contentType`](https://developer.mozilla.org/en-US/docs/Web/API/Document/contentType)
 - [MDN: `MutationObserver.observe()`](https://developer.mozilla.org/en-US/docs/Web/API/MutationObserver/observe)
-- [MDN: `Document.createTreeWalker()`](https://developer.mozilla.org/en-US/docs/Web/API/Document/createTreeWalker)
 - [Mozilla Support: find and install add-ons on Firefox for Android](https://support.mozilla.org/en-US/kb/find-and-install-add-ons-firefox-android)
 - [Firefox Extension Workshop: developing extensions for Firefox for Android](https://extensionworkshop.com/documentation/develop/developing-extensions-for-firefox-for-android/) — official MV3 compatibility warning and Android development guidance; page source date 2023-11-12.
 - [Firefox Extension Workshop: distribute Manifest V2 and V3 extensions](https://extensionworkshop.com/documentation/publish/distribute-manifest-versions/) — confirms that one extension package cannot be both MV2 and MV3; its distribution examples are dated 2023-03-03 and must not be treated as current AMO channel policy without re-verification.
 - [Mozilla Bug 1812125](https://bugzilla.mozilla.org/show_bug.cgi?id=1812125) — Firefox Android host-permission editing limitation.
+
+## 19. Initial implementation status
+
+As of 2026-07-29, the repository contains the pure resumable transformer, bounded DOM engine, Chrome/Firefox manifests, deterministic dependency-free release packager, DOM/grammar tests, and development-only Chrome/Firefox smoke-test drivers. The packaged runtime contains only `manifest.json`, `transform.js`, and `content.js`; it has no runtime dependency.
+
+The current checkpoint has passed:
+
+- 22 Node tests covering the normative grammar, representative exhaustive calendars, every accepted hour/minute/meridiem combination, Unicode boundaries, idempotence fuzzing, long-run resumability, DOM eligibility, dynamic mutation, backpressure recovery, cooldown behavior, XHTML/SVG, and the 4,096-shadow-root cap;
+- packaged real-MIME smoke tests in Chrome for Testing 150.0.7871.186 and Firefox desktop 153.0.1, including HTML, XHTML, dynamic mutation, related HTML frames, and an untouched `text/plain` frame/resource;
+- Mozilla `web-ext` 10.5.0 lint with zero errors, notices, or warnings;
+- ZIP integrity and deterministic in-process byte-for-byte build checks; and
+- a zero-finding npm vulnerability audit for the pinned development dependency set.
+
+This checkpoint is not a release sign-off. Remaining gates include a signed Firefox Android 142+ installation/permission/injection test on a real device or emulator, recorded desktop/Android performance budgets, manual non-destructive GitHub and Cloudflare canaries, current store-policy/minimum-version revalidation, store assets and disclosures, and an explicit owner decision on the source license. Official Chrome Android remains unsupported for the platform reason in section 4.

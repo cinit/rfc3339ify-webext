@@ -1,0 +1,21 @@
+{
+  "name": "rfc3339ify-webext",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A lightweight WebExtension that normalizes selected English dates and 12-hour times in rendered page text.",
+  "scripts": {
+    "check": "node --check src/transform.js && node --check src/content.js && npm test && npm run package",
+    "package": "node scripts/package.mjs",
+    "test:chrome": "npm run package && node scripts/chrome-smoke.mjs",
+    "test:firefox": "npm run package && node scripts/firefox-smoke.mjs",
+    "test": "node --test",
+    "test:transform": "node --test test/transform.test.js"
+  },
+  "license": "UNLICENSED",
+  "engines": {
+    "node": "^22.22.2 || >=24.15.0"
+  },
+  "devDependencies": {
+    "jsdom": "30.0.1"
+  }
+}

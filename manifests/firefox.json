@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "RFC3339ify",
+  "version": "0.1.0",
+  "description": "Normalizes selected English dates and 12-hour times in rendered HTML and XHTML page text.",
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "transform.js",
+        "content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true,
+      "match_about_blank": true,
+      "match_origin_as_fallback": true
+    }
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "{5f52c973-693d-43f8-92f5-9644965786c6}",
+      "strict_min_version": "140.0",
+      "data_collection_permissions": {
+        "required": [
+          "none"
+        ]
+      }
+    },
+    "gecko_android": {
+      "strict_min_version": "142.0"
+    }
+  }
+}
