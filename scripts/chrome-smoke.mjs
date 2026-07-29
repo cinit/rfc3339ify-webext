@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
@@ -46,6 +47,16 @@ function listen(server) {
 
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function unpackedExtensionId(directory) {
+  const digest = createHash("sha256").update(directory).digest();
+  let id = "";
+  for (let index = 0; index < 16; index += 1) {
+    id += String.fromCharCode(97 + (digest[index] >> 4));
+    id += String.fromCharCode(97 + (digest[index] & 0x0f));
+  }
+  return id;
 }
 
 async function terminateProcessGroup(child, initialSignal, timeoutMs) {
@@ -172,6 +183,7 @@ const server = http.createServer((request, response) => {
 
 let chromeProcess;
 let cdp;
+let popupTargetId;
 const chromeLogs = [];
 const profileDirectory = await mkdtemp(path.join(os.tmpdir(), "rfc3339ify-chrome-"));
 
@@ -221,6 +233,37 @@ try {
     "document.querySelector('#srcdoc-frame')?.contentDocument?.body?.textContent.trim()",
     "02-02");
 
+  // Opening the local action page exercises the same popup/storage path as a
+  // toolbar click without requiring a background worker or tab permission.
+  const extensionId = unpackedExtensionId(extensionDirectory);
+  ({ targetId: popupTargetId } = await cdp.send("Target.createTarget", {
+    url: `chrome-extension://${extensionId}/popup.html`,
+  }));
+  const { sessionId: popupSessionId } = await cdp.send("Target.attachToTarget", {
+    targetId: popupTargetId,
+    flatten: true,
+  });
+  await cdp.send("Runtime.enable", {}, popupSessionId);
+  await waitForValue(cdp, popupSessionId,
+    "document.querySelector('#global-enabled')?.checked", true);
+  await evaluate(cdp, popupSessionId,
+    "document.querySelector('#global-enabled').click()");
+  await waitForValue(cdp, popupSessionId,
+    "document.querySelector('#status')?.textContent",
+    "Off — future changes are stopped. Reload affected tabs to restore text from the page.");
+  await evaluate(cdp, sessionId,
+    "document.querySelector('#value').firstChild.data = 'Mar 3'");
+  await delay(250);
+  assert.equal(await evaluate(cdp, sessionId,
+    "document.querySelector('#value')?.textContent"), "Mar 3");
+  await evaluate(cdp, popupSessionId,
+    "document.querySelector('#global-enabled').click()");
+  await waitForValue(cdp, popupSessionId,
+    "document.querySelector('#status')?.textContent",
+    "On — applies to all eligible pages in this browser.");
+  await waitForValue(cdp, sessionId,
+    "document.querySelector('#value')?.textContent", "03-03");
+
   await evaluate(cdp, sessionId,
     "document.querySelector('#blank-frame').contentDocument.body.textContent = 'Mar 3'");
   await waitForValue(cdp, sessionId,
@@ -262,6 +305,11 @@ try {
   }
   throw error;
 } finally {
+  if (cdp && popupTargetId) {
+    try {
+      await cdp.send("Target.closeTarget", { targetId: popupTargetId });
+    } catch { /* Browser may already be closing. */ }
+  }
   if (cdp) cdp.close();
   await terminateProcessGroup(chromeProcess, "SIGTERM", 3000);
   await new Promise((resolve) => server.close(resolve));

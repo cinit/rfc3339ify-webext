@@ -1,8 +1,8 @@
 /*
  * Bounded DOM integration for RFC3339ify.
  *
- * In a browser this file starts itself after transform.js.  Node-based DOM
- * tests require the exported starter explicitly.
+ * This file defines an explicit controller factory. bootstrap.js decides when
+ * to start and stop it after resolving the extension-wide enabled setting.
  */
 (function exposeContent(globalObject, factory) {
   "use strict";
@@ -10,7 +10,7 @@
   if (typeof module === "object" && module.exports) {
     module.exports = factory;
   } else {
-    factory(globalObject, globalObject.RFC3339ifyTransform);
+    globalObject.RFC3339ifyContent = Object.freeze({ startContent: factory });
   }
 })(typeof globalThis === "object" ? globalThis : this,
   function startRFC3339ify(windowObject, transformApi, options) {
@@ -870,10 +870,20 @@
     function stop() {
       if (stopped) return;
       stopped = true;
-      for (const rootState of activeRoots.values()) rootState.observer.disconnect();
+      for (const rootState of activeRoots.values()) {
+        rootState.active = false;
+        rootState.observer.disconnect();
+        rootState.recordBatches = [];
+        rootState.pendingRecordCount = 0;
+      }
       activeRoots.clear();
       queue = [];
       queueHead = 0;
+      globalPendingEntries = 0;
+      globalPendingRecords = 0;
+      observedShadowRoots = 0;
+      shadowCleanupSweepQueued = false;
+      shadowCoverageLimited = false;
       cooldownNodes.clear();
       if (scheduleHandle !== null) {
         if (typeof windowObject.cancelIdleCallback === "function") {
@@ -882,13 +892,17 @@
           windowObject.clearTimeout(scheduleHandle);
         }
       }
+      scheduled = false;
+      scheduleHandle = null;
       if (cooldownTimer !== null) windowObject.clearTimeout(cooldownTimer.handle);
+      cooldownTimer = null;
+      cooldownSweepQueued = false;
     }
 
     enrollRoot(documentObject, null);
 
     return Object.freeze({
-      active: true,
+      get active() { return !stopped; },
       flushForTest,
       retryCooldownsForTest,
       stop,

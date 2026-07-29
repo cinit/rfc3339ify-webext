@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import {
-  copyFile,
   mkdir,
   readFile,
   rm,
@@ -11,7 +10,19 @@ import { fileURLToPath } from "node:url";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const distRoot = path.join(projectRoot, "dist");
-const sourceFiles = Object.freeze(["transform.js", "content.js"]);
+const contentScriptFiles = Object.freeze([
+  "transform.js", "content.js", "settings.js", "bootstrap.js",
+]);
+const releaseFiles = Object.freeze([
+  ...contentScriptFiles.map((name) => ({ name, source: path.join("src", name) })),
+  { name: "popup.html", source: path.join("src", "popup.html") },
+  { name: "popup.css", source: path.join("src", "popup.css") },
+  { name: "popup.js", source: path.join("src", "popup.js") },
+  ...[16, 32, 48, 128].map((size) => ({
+    name: `icons/icon-${size}.png`,
+    source: path.join("icons", `icon-${size}.png`),
+  })),
+]);
 const prohibitedSource = Object.freeze([
   ["network API", /\b(?:fetch|XMLHttpRequest|WebSocket|EventSource|sendBeacon)\b/],
   ["dynamic code", /\b(?:eval|Function)\s*\(/],
@@ -107,13 +118,29 @@ function validateManifest(target, manifest) {
   assert.equal(manifest.content_scripts.length, 1);
   assert.deepEqual(manifest.content_scripts[0].matches,
     ["http://*/*", "https://*/*"]);
-  assert.deepEqual(manifest.content_scripts[0].js, sourceFiles);
+  assert.deepEqual(manifest.content_scripts[0].js, contentScriptFiles);
   assert.equal(manifest.content_scripts[0].all_frames, true);
   assert.equal(manifest.content_scripts[0].match_about_blank, true);
   assert.equal(manifest.content_scripts[0].match_origin_as_fallback, true);
   assert.equal(manifest.content_scripts[0].run_at, "document_idle");
+  assert.deepEqual(manifest.permissions, ["storage"]);
+  assert.deepEqual(manifest.icons, {
+    16: "icons/icon-16.png",
+    32: "icons/icon-32.png",
+    48: "icons/icon-48.png",
+    128: "icons/icon-128.png",
+  });
+  assert.deepEqual(manifest.action, {
+    default_title: "RFC3339ify controls",
+    default_popup: "popup.html",
+    default_icon: {
+      16: "icons/icon-16.png",
+      32: "icons/icon-32.png",
+      48: "icons/icon-48.png",
+    },
+  });
   for (const forbidden of [
-    "permissions", "host_permissions", "background", "action",
+    "host_permissions", "background",
     "web_accessible_resources", "externally_connectable",
   ]) {
     assert.equal(Object.hasOwn(manifest, forbidden), false,
@@ -138,13 +165,36 @@ function validateManifest(target, manifest) {
 
 async function loadReleaseSources() {
   const entries = [];
-  for (const name of sourceFiles) {
-    const data = await readFile(path.join(projectRoot, "src", name));
-    const source = data.toString("utf8");
-    for (const [capability, pattern] of prohibitedSource) {
-      assert.doesNotMatch(source, pattern, `${name} contains prohibited ${capability}`);
+  for (const file of releaseFiles) {
+    const data = await readFile(path.join(projectRoot, file.source));
+    if (file.name.endsWith(".js")) {
+      const source = data.toString("utf8");
+      for (const [capability, pattern] of prohibitedSource) {
+        assert.doesNotMatch(source, pattern,
+          `${file.name} contains prohibited ${capability}`);
+      }
+    } else if (file.name === "popup.html") {
+      const source = data.toString("utf8");
+      assert.doesNotMatch(source, /<script(?!\s+src=)/i,
+        "popup.html contains inline script");
+      assert.doesNotMatch(source, /\son[a-z]+\s*=/i,
+        "popup.html contains inline event handler");
+      assert.doesNotMatch(source, /https?:\/\//i,
+        "popup.html contains a remote URL");
+    } else if (file.name === "popup.css") {
+      const source = data.toString("utf8");
+      assert.match(source, /color-scheme:\s*light dark/);
+      assert.doesNotMatch(source, /appearance\s*:\s*none/i);
+      assert.doesNotMatch(source, /#(?:000(?:000)?|fff(?:fff)?)\b/i,
+        "popup.css contains a hard-coded black/white color");
+    } else if (file.name.endsWith(".png")) {
+      const expectedSize = Number(file.name.match(/icon-(\d+)\.png$/)[1]);
+      assert.deepEqual(data.subarray(0, 8),
+        Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+      assert.equal(data.readUInt32BE(16), expectedSize);
+      assert.equal(data.readUInt32BE(20), expectedSize);
     }
-    entries.push({ name, data });
+    entries.push({ name: file.name, data });
   }
   return entries;
 }
@@ -158,8 +208,10 @@ async function buildTarget(target, releaseSources) {
   const targetDirectory = path.join(distRoot, target);
   await mkdir(targetDirectory, { recursive: true });
   await writeFile(path.join(targetDirectory, "manifest.json"), manifestData);
-  for (const name of sourceFiles) {
-    await copyFile(path.join(projectRoot, "src", name), path.join(targetDirectory, name));
+  for (const entry of releaseSources) {
+    const destination = path.join(targetDirectory, entry.name);
+    await mkdir(path.dirname(destination), { recursive: true });
+    await writeFile(destination, entry.data);
   }
 
   const firstZip = makeZip(entries);

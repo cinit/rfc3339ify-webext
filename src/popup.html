@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <title>RFC3339ify controls</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main aria-labelledby="popup-title">
+      <h1 id="popup-title">RFC3339ify</h1>
+      <label class="setting-row" for="global-enabled">
+        <input id="global-enabled" type="checkbox" disabled>
+        <span>Normalize dates and times</span>
+      </label>
+      <p id="status" role="status" aria-live="polite">Loading setting…</p>
+      <button id="recovery" type="button" hidden>Retry</button>
+    </main>
+    <script src="settings.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

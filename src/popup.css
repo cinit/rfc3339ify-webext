@@ -1,0 +1,44 @@
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+  background: Canvas;
+  color: CanvasText;
+}
+
+body {
+  margin: 0;
+  background: Canvas;
+  color: CanvasText;
+}
+
+main {
+  box-sizing: border-box;
+  inline-size: min(22rem, 100vw);
+  max-inline-size: 100%;
+  padding: 1rem;
+}
+
+h1 {
+  margin-block: 0 0.5rem;
+  font-size: 1.125rem;
+  line-height: 1.4;
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-block-size: 48px;
+  line-height: 1.4;
+}
+
+#status {
+  margin-block: 0.5rem 0;
+  line-height: 1.4;
+}
+
+#recovery {
+  min-block-size: 48px;
+  margin-block-start: 0.75rem;
+  font: inherit;
+}

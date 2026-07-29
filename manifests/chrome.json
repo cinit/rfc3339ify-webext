@@ -4,6 +4,24 @@
   "version": "0.1.0",
   "description": "Normalizes selected English dates and 12-hour times in rendered HTML and XHTML page text.",
   "minimum_chrome_version": "99",
+  "permissions": [
+    "storage"
+  ],
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "action": {
+    "default_title": "RFC3339ify controls",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png"
+    }
+  },
   "content_scripts": [
     {
       "matches": [
@@ -12,7 +30,9 @@
       ],
       "js": [
         "transform.js",
-        "content.js"
+        "content.js",
+        "settings.js",
+        "bootstrap.js"
       ],
       "run_at": "document_idle",
       "all_frames": true,

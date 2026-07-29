@@ -1,6 +1,6 @@
 # RFC3339ify WebExtension: detailed design
 
-Status: Core implementation complete; global-control implementation and release validation gates remain
+Status: Core and global-control implementation complete; release validation gates remain
 
 Date: 2026-07-29
 
@@ -672,7 +672,7 @@ JavaScript tasks are not interrupted midway, and `storage.onChanged` delivery di
 
 ## 8. Extension structure and manifests
 
-### 8.1 Proposed source layout
+### 8.1 Source layout
 
 ```text
 src/
@@ -698,8 +698,10 @@ test/
   popup.test.js
   fixtures/
 scripts/
+  generate-icons.mjs    deterministic static icon generator
   package.mjs           deterministic packaging and artifact audit
   chrome-smoke.mjs      development-only real-browser smoke test
+  firefox-smoke.mjs     development-only real-browser smoke test
 ```
 
 Keep these source boundaries visible in the release artifact and do not minify them. A bundler is unnecessary: content scripts are listed in dependency order, and `popup.html` loads `settings.js` before `popup.js` with external script elements. The popup must not use inline JavaScript, remote assets, a framework, a third-party browser-API polyfill, or a custom checkbox/switch implementation. Its CSS is limited to responsive spacing, typography, touch-target sizing, focus visibility, and system-color adaptation.
@@ -1283,14 +1285,14 @@ The first release is acceptable when:
 
 ## 19. Initial implementation status
 
-As of 2026-07-29, the repository contains the pure resumable transformer, bounded DOM engine, Chrome/Firefox manifests, deterministic dependency-free release packager, DOM/grammar tests, and development-only Chrome/Firefox smoke-test drivers. The packaged runtime currently contains only `manifest.json`, `transform.js`, and `content.js`; it has no runtime dependency. Sections 5.5, 7.8, 8, 12.3, and 14 specify the next global-control change, which is designed but not yet implemented. Until that change lands, the current artifact still has no action or storage permission and requires browser-native controls plus reload to stop/restart processing.
+As of 2026-07-29, the repository contains the pure resumable transformer, bounded DOM engine, race-safe global-setting bootstrap, adaptive action popup, Chrome/Firefox manifests, deterministic dependency-free release packager/icon generator, DOM/grammar/settings/popup tests, and development-only Chrome/Firefox smoke-test drivers. The packaged runtime contains the manifest; `transform.js`, `content.js`, `settings.js`, and `bootstrap.js`; popup HTML/CSS/JavaScript; and four static PNG icons. It has no runtime dependency or background context.
 
 The current checkpoint has passed:
 
-- 22 Node tests covering the normative grammar, representative exhaustive calendars, every accepted hour/minute/meridiem combination, Unicode boundaries, idempotence fuzzing, long-run resumability, DOM eligibility, dynamic mutation, backpressure recovery, cooldown behavior, XHTML/SVG, and the 4,096-shadow-root cap;
-- packaged real-MIME smoke tests in Chrome for Testing 150.0.7871.186 and Firefox desktop 153.0.1, including HTML, XHTML, dynamic mutation, related HTML frames, and an untouched `text/plain` frame/resource;
+- 33 Node tests covering the normative grammar, representative exhaustive calendars, every accepted hour/minute/meridiem combination, Unicode boundaries, idempotence fuzzing, long-run resumability, DOM eligibility, dynamic mutation, backpressure recovery, cooldown behavior, XHTML/SVG, the 4,096-shadow-root cap, storage decoding/API variants, bootstrap races and teardown, popup state/error recovery, and adaptive native-control styling;
+- packaged real-MIME smoke tests in Chrome for Testing 150.0.7871.186 and Firefox desktop 153.0.1, including HTML, XHTML, dynamic mutation, related HTML frames, and an untouched `text/plain` frame/resource; the Chrome run additionally covers popup storage writes, live global disable, and live re-enable/rescan;
 - Mozilla `web-ext` 10.5.0 lint with zero errors, notices, or warnings;
 - ZIP integrity and deterministic in-process byte-for-byte build checks; and
 - a zero-finding npm vulnerability audit for the pinned development dependency set.
 
-This checkpoint is not a release sign-off. Remaining work includes implementing and testing the designed global switch, then a signed Firefox Android 142+ installation/permission/injection/action test on a real device or emulator, recorded desktop/Android performance budgets, manual non-destructive GitHub and Cloudflare canaries, current store-policy/minimum-version revalidation, store assets and disclosures, and an explicit owner decision on the source license. Official Chrome Android remains unsupported for the platform reason in section 4.
+This checkpoint is not a release sign-off. Remaining work includes a signed Firefox Android 142+ installation/permission/injection/action test on a real device or emulator, recorded desktop/Android performance budgets, manual non-destructive GitHub and Cloudflare canaries, current store-policy/minimum-version revalidation, store listing assets and disclosures, and an explicit owner decision on the source license. Official Chrome Android remains unsupported for the platform reason in section 4.

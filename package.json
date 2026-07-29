@@ -4,7 +4,8 @@
   "private": true,
   "description": "A lightweight WebExtension that normalizes selected English dates and 12-hour times in rendered page text.",
   "scripts": {
-    "check": "node --check src/transform.js && node --check src/content.js && npm test && npm run package",
+    "check": "node --check src/transform.js && node --check src/content.js && node --check src/settings.js && node --check src/bootstrap.js && node --check src/popup.js && node --check scripts/generate-icons.mjs && node --check scripts/package.mjs && node --check scripts/chrome-smoke.mjs && node --check scripts/firefox-smoke.mjs && npm test && npm run package",
+    "icons": "node scripts/generate-icons.mjs",
     "package": "node scripts/package.mjs",
     "test:chrome": "npm run package && node scripts/chrome-smoke.mjs",
     "test:firefox": "npm run package && node scripts/firefox-smoke.mjs",
