@@ -702,7 +702,7 @@ scripts/
   chrome-smoke.mjs      development-only real-browser smoke test
 ```
 
-Keep these source boundaries visible in the release artifact and do not minify them. A bundler is unnecessary: content scripts are listed in dependency order, and `popup.html` loads `settings.js` before `popup.js` with external script elements. The popup must not use inline JavaScript, remote assets, a framework, or a third-party browser-API polyfill.
+Keep these source boundaries visible in the release artifact and do not minify them. A bundler is unnecessary: content scripts are listed in dependency order, and `popup.html` loads `settings.js` before `popup.js` with external script elements. The popup must not use inline JavaScript, remote assets, a framework, a third-party browser-API polyfill, or a custom checkbox/switch implementation. Its CSS is limited to responsive spacing, typography, touch-target sizing, focus visibility, and system-color adaptation.
 
 ### 8.2 Minimal manifest shape
 
@@ -1015,9 +1015,11 @@ Settings/bootstrap tests must cover:
 Popup tests must cover:
 
 - accessible name/state for the native checkbox, a label that activates its full touch target, logical focus order, and a polite live status region;
+- preservation of the browser-native checkbox appearance, including checked, unchecked, indeterminate, disabled, and focus-visible states;
 - initial loading/indeterminate state, default enabled state, saved on/off confirmation, malformed-value repair, external `storage.onChanged` updates while open, and rapid interaction serialization;
 - read failure and write failure: never show an unconfirmed state as saved, revert to the last confirmed state when possible, expose a visible error, and permit an explicit retry;
-- responsive layout at desktop popup widths and Firefox Android's full-window overlay, at 200% text zoom and in light/dark color schemes;
+- responsive layout at desktop popup widths and Firefox Android's full-window overlay, at 200% text zoom and in browser/OS light and dark color schemes;
+- automatic `Canvas`/`CanvasText` and native form-control adaptation with no hard-coded black/white palette, forced theme, or unreadable transition state;
 - at least a 48 CSS-pixel tap target, no hover-only disclosure, and operation with touch and keyboard/switch-control input; and
 - no auto-close after a change, network request, inline script, page/tab query, hostname display, badge update, or dynamic icon mutation.
 
@@ -1099,7 +1101,7 @@ For support, diagnostics should be reproducible with public fixture pages and ve
 
 ### 14.1 Selected control
 
-Declare an MV3 `action` with `default_popup`. The popup contains one native checkbox whose full label row is clickable/tappable. This is the canonical control for `globalEnabled`; no background script is required because the popup writes directly to `storage.local`, and content-script bootstraps subscribe directly to `storage.onChanged`.
+Declare an MV3 `action` with `default_popup`. The popup contains one ordinary native `<input type="checkbox">` whose full `<label>` row is clickable/tappable. Do not replace it with a custom slider, switch drawing, image, or ARIA-reimplemented control. This is the canonical control for `globalEnabled`; no background script is required because the popup writes directly to `storage.local`, and content-script bootstraps subscribe directly to `storage.onChanged`.
 
 The compact UI is:
 
@@ -1136,10 +1138,28 @@ The layout must:
 
 - be responsive rather than set a desktop-only fixed width;
 - keep the labeled checkbox row at least 48 CSS pixels high and make the entire row the touch target;
-- use system fonts, logical CSS properties, sufficient contrast, and light/dark color-scheme support;
+- use system fonts, logical CSS properties, and browser/OS system colors;
+- declare `color-scheme: light dark` so the background, text, native checkbox, buttons, and focus indicators automatically follow the active light/dark scheme;
+- use `Canvas` and `CanvasText` for the popup surface/text where explicit colors are needed, without hard-coded `#000`, `#fff`, or a JavaScript theme detector;
 - remain usable at large text sizes without clipping or horizontal scrolling;
 - require neither hover nor a hardware keyboard; and
 - retain native checkbox semantics, visible focus, and a polite live region for saving/success/error status.
+
+The preferred CSS baseline is intentionally small:
+
+```css
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+}
+
+body {
+  color: CanvasText;
+  background: Canvas;
+}
+```
+
+Leave checkbox painting, checked color, disabled appearance, and platform-specific sizing to the browser. Minimal spacing and a 48 CSS-pixel label row may be styled, but do not set `appearance: none`, draw pseudo-element controls, animate the state, or maintain separate light/dark stylesheets. This keeps the control familiar on desktop and Android and lets high-contrast/forced-colors modes continue to work through native rendering.
 
 Do not auto-close the overlay after changing the setting. A persistent result is more important on Android, where reopening the path takes several taps and silent write failure would otherwise be easy to miss.
 
