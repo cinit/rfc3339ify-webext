@@ -1,6 +1,6 @@
 # RFC3339ify WebExtension: detailed design
 
-Status: Initial implementation complete; release validation gates remain
+Status: Core implementation complete; global-control implementation and release validation gates remain
 
 Date: 2026-07-29
 
@@ -19,16 +19,17 @@ The extension rewrites a deliberately small set of English, human-readable date 
 | `01:02:03 AM` | `01:02:03` |
 | `Tue, 28 Jul 2026 18:00:58 +0000` | `Tue, 2026-07-28 18:00:58 +0000` |
 
-The recommended implementation is one small, readable content script. It:
+The recommended runtime is a small set of readable, dependency-free scripts. It:
 
 1. runs in the browser's isolated extension world;
 2. exits unless `document.contentType` is `text/html` or `application/xhtml+xml`;
-3. walks eligible DOM `Text` nodes without reading or rewriting HTML;
-4. applies a deterministic, locale-independent scanner;
-5. changes only `Text.data` when the output differs; and
-6. watches later DOM mutations in bounded, coalesced batches.
+3. reads one install-local Boolean to decide whether normalization is enabled;
+4. walks eligible DOM `Text` nodes without reading or rewriting HTML while enabled;
+5. applies a deterministic, locale-independent scanner;
+6. changes only `Text.data` when the output differs; and
+7. watches later DOM mutations in bounded, coalesced batches while enabled.
 
-There is no background/service-worker process, remote code, telemetry, network access, page-world injection, or production dependency. This keeps the extension small and makes its behavior on sensitive sites such as GitHub and the Cloudflare dashboard practical to audit.
+An action popup provides a persistent global on/off switch on Chrome and Firefox desktop and through Firefox Android's Add-ons menu. The switch uses `storage.local` and stores only one Boolean; it does not store page text, hostnames, match counts, or browsing history. There is no background/service-worker process, remote code, telemetry, network access, page-world injection, or production dependency. This keeps the extension small and makes its behavior on sensitive sites such as GitHub and the Cloudflare dashboard practical to audit.
 
 One requested target is not currently feasible: official Google Chrome on Android does not run Chrome Web Store extensions. Google documents extensions as a desktop customization; its phone workflow only queues an extension for installation on a desktop computer. The same WebExtension can target Chrome desktop and Firefox desktop/Android, but it cannot target official Chrome Android until Google exposes an extension platform there. Extension-capable Chromium forks on Android are a possible unsupported test target, not a Chrome Android deliverable.
 
@@ -44,13 +45,14 @@ One requested target is not currently feasible: official Google Chrome on Androi
 - Leave HTTP(S) resources served as `text/plain` untouched, even when the browser displays them in a generated `<pre>` element.
 - Produce the same result on all supported browsers and independently of the browser, page, or operating-system locale.
 - Be idempotent: applying the transformer twice must produce exactly the same result as applying it once.
+- Let the user persistently enable or disable future normalization across all eligible pages in the current browser profile/extension installation, without normally requiring a tab reload.
 
 ### 2.2 Security and quality goals
 
 - Minimize requested browser privileges and the amount of long-lived code executing on every page.
 - Make the release artifact readable and small enough for direct source review.
 - Never evaluate page text as HTML or JavaScript.
-- Never transmit, persist, or log page content.
+- Never transmit, persist, or log page content; persist only the global enabled Boolean.
 - Avoid unbounded synchronous DOM walks and catastrophic regular-expression behavior.
 - Fail closed on unsupported or ambiguous syntax: leaving text unchanged is preferable to a plausible but incorrect conversion.
 - Avoid page layout reads in the normal path so that the extension does not cause repeated style/layout calculation.
@@ -62,10 +64,12 @@ One requested target is not currently feasible: official Google Chrome on Androi
 - Converting timezone offsets, timezone abbreviations, or local time to UTC.
 - Producing a complete RFC 3339 timestamp. The name “RFC3339ify” describes the preferred numeric style; outputs such as `01-01` omit a year and `??23-01-12` explicitly marks an unknown century, so neither is RFC 3339.
 - Changing DOM attributes, form values, placeholders, accessibility labels, metadata, JSON, scripts, styles, network responses, clipboard contents, or downloaded files.
-- Changing browser UI, PDF viewer content, extension-store pages, browser-protected pages, or other locations where content scripts are prohibited.
+- Changing browser-owned page content or native UI beyond the standard extension action popup, including PDF viewer content, extension-store pages, browser-protected pages, or other locations where content scripts are prohibited.
 - Reading text drawn into a `<canvas>`, CSS-generated `::before`/`::after` content, browser-native form-control UI, or inaccessible closed shadow roots.
 - Parsing a date whose visible characters are split across multiple DOM `Text` nodes in version 1. This limitation is discussed in section 7.6.
 - Supporting official Chrome on Android while Chrome itself lacks extension support.
+- Providing per-site, per-tab, schedule-based, or synchronized cross-device enable rules in version 1.
+- Reconstructing text that was already normalized before the extension was switched off.
 
 ## 4. Feasibility and browser support
 
@@ -79,7 +83,7 @@ One requested target is not currently feasible: official Google Chrome on Androi
 | Android Chromium forks with extension support | Unsupported | May work, but their manifest/API/store compatibility and maintenance are outside the threat model and release matrix. |
 | Safari/iOS | Out of scope | Would require a separate packaging, signing, and compatibility effort. |
 
-The core uses only mature DOM APIs (`MutationObserver`, DOM parent/sibling traversal, `WeakMap`, and ordinary string operations). Browser-specific code is confined to generated manifests, packaging metadata, and development-only browser tests.
+The transformer and DOM controller use only mature DOM APIs (`MutationObserver`, DOM parent/sibling traversal, `WeakMap`, and ordinary string operations). Browser-specific extension-API code is confined to the small settings/bootstrap/popup boundary, generated manifests, packaging metadata, and development-only browser tests.
 
 ### 4.1 Firefox Android manifest decision
 
@@ -88,10 +92,11 @@ Mozilla's official Firefox Extension Workshop currently recommends Manifest V2 f
 Version 1 nevertheless uses one Firefox MV3 artifact for desktop and Android:
 
 - it has no background script or service worker;
-- it uses a static content script and never makes a runtime permission request; and
+- it uses a static content script and never makes a runtime permission request;
+- its `action` popup and `storage.local` setting are supported without a background context; and
 - one artifact avoids divergent manifests, signing channels, version histories, and Android-only parser builds.
 
-The inability to edit host grants on Firefox Android still applies. Installation, acceptance and denial of the static all-sites grant, actual content-script injection, and the resulting permission UI are release gates on a real Android installation. The store description must say that per-site restriction may be unavailable on Firefox Android and that disabling or uninstalling the extension is the reliable fallback there.
+The inability to edit host grants on Firefox Android still applies. Installation, acceptance and denial of the static all-sites grant, actual content-script injection, action-popup presentation, and the resulting permission UI are release gates on a real Android installation. The built-in global switch provides a routine whole-extension pause without depending on Android's host-grant UI. Browser-level disabling or uninstalling remains the emergency fallback.
 
 Do not create an MV2 build preemptively. If real-device testing exposes a concrete MV3 blocker, produce a separate generated Firefox Android MV2 package from the identical runtime source and design its AMO identity, listing/update channel, signing, version ordering, and migration path before publishing it. A single manifest/package cannot support MV2 and MV3 simultaneously.
 
@@ -167,6 +172,35 @@ A strict computed-visibility mode is therefore rejected for version 1. If recons
 No URL-change or history hook is required for single-page applications because the document observer remains active. A full navigation creates a new document and a new content-script instance.
 
 Conversion is eventually convergent, not atomic. `document_idle` and bounded traversal mean the original spelling, or a mixture of original and normalized text on a large page, may be visible briefly. Version 1 does not hide the document or inject render-blocking CSS because doing so would increase page impact and failure risk. Store/user documentation must not promise flash-free conversion, and browser tests must measure time to convergence as well as individual task duration.
+
+### 5.5 Install-wide enable switch
+
+The extension provides one persistent setting named `globalEnabled`. “Global” means every eligible page and frame reached by this extension installation in the current browser profile. It does not mean synchronization across browser profiles, browsers, devices, or separate installations, and it does not grant access to protected pages where content scripts cannot run.
+
+Use `storage.local`, not `storage.sync`. Local state is predictable, works on Firefox Android, and avoids inconsistent cross-browser promises: in particular, Firefox Android's sync storage is available as an API but is not synchronized through the Mozilla account. A separate private/incognito preference is out of scope. Where the browser permits the extension in private browsing and exposes the same extension-local storage, the same switch applies; this behavior must be verified on each release target before user documentation calls it profile-wide.
+
+The setting is decoded conservatively:
+
+| Stored state | Effective state |
+| --- | --- |
+| Key absent, including a new installation | Enabled |
+| Boolean `true` | Enabled |
+| Boolean `false` | Disabled |
+| Any other stored type/value | Disabled |
+| Storage read/API failure in a particular extension context | Disabled in that context |
+
+An absent key deliberately preserves the product's default-on behavior and avoids an installation-time writer. Clearing all extension data therefore restores the default enabled state. A malformed value or API failure instead fails closed so an uncertain state cannot cause writes on a privileged page.
+
+Switching off has these exact semantics:
+
+- after a content-script context observes the new setting, it disconnects mutation observers, cancels queued callbacks and timers, discards pending scans, and performs no later `Text.data` write from that controller;
+- the small storage listener remains alive so the same loaded document can be switched on again;
+- text already changed in the live DOM is not reconstructed; and
+- propagation to all tab/frame extension contexts is eventually consistent, not an atomic browser-wide transaction, so a context may finish work before it receives the change event.
+
+Switching on creates a fresh DOM controller in every live eligible context that receives the event. Its initial traversal covers changes accumulated while the extension was off. Idempotence makes rescanning already-normalized text safe.
+
+Normally neither direction needs a reload. A reload or navigation can still be required when the page predates extension injection, the extension was disabled and re-enabled through browser-native controls, Firefox Android discarded the extension context while retaining the page, or the page is otherwise inaccessible. Reloading requests a fresh rendering from the page; it is not a guarantee that application-side or server-side reactions to earlier DOM mutations can be reversed.
 
 ## 6. Transformation specification
 
@@ -409,7 +443,12 @@ static content script in each permitted frame
 document.contentType gate ---------------------> stop for non-HTML/XHTML
         |
         v
-start document MutationObserver
+install storage listener, read globalEnabled
+        |
+        +---------------- disabled -------------> dormant bootstrap only
+        |
+        v enabled
+start DOM controller and document MutationObserver
         |
         v
 queue initial document + discover open shadow roots
@@ -425,6 +464,22 @@ write Text.data only when changed
         ^
         |
 MutationObserver coalesces added/changed nodes
+```
+
+The action popup is a separate extension page. It writes only `globalEnabled` to `storage.local`; it does not message tabs directly:
+
+```text
+desktop toolbar/extensions menu or Firefox Android Add-ons menu
+        |
+        v
+action popup -> storage.local(globalEnabled)
+                         |
+                         v
+               storage.onChanged in each
+               live eligible frame bootstrap
+                         |
+                         v
+                start/stop DOM controller
 ```
 
 ### 7.2 Injection and frames
@@ -581,6 +636,40 @@ Two cases cannot be covered without invasive behavior:
 
 Patching `Element.prototype.attachShadow` in the page's main world would improve discovery but is rejected. It expands the security boundary, can conflict with the application, and requires page-world communication. Periodic full scans are also rejected for version 1. These rare shadow cases are documented limitations.
 
+### 7.8 Bootstrap and controller lifecycle
+
+Refactor `content.js` so loading it defines an explicit `startContent(window, transformApi)` function but does not automatically start the DOM engine in a browser. A final `bootstrap.js` content script owns the global setting and the current controller. The manifest loads scripts in this order:
+
+```text
+transform.js -> content.js -> settings.js -> bootstrap.js
+```
+
+`settings.js` is a small shared, dependency-free adapter used by the bootstrap and popup. It owns the single setting key, strict state decoding, and the minimal callback-versus-Promise compatibility needed for Chrome and Firefox. Loading it only defines functions; it does not read or write storage until explicitly called. It must not expose page data, use a third-party compatibility library, or introduce general-purpose messaging.
+
+The bootstrap first performs the section-5.1 MIME and top-level-scheme gates, before touching storage or installing a listener. A rejected document returns permanently. An eligible bootstrap starts with no controller, then follows this order:
+
+1. Register a `storage.onChanged` listener for the `local` area.
+2. Capture a local revision number and asynchronously read `globalEnabled`.
+3. Increment the revision whenever a relevant change event is received and reconcile that event immediately.
+4. Apply the initial read or read-failure result only if the revision has not changed since the read began.
+5. Keep the listener installed for the lifetime of the content-script context, including while globally disabled.
+
+Registering the listener before the asynchronous read prevents a setting change from being lost during startup. The revision check prevents an older read result from overwriting a newer change event. Unrelated storage keys and non-`local` change events are ignored. Removal of the key means “absent” and therefore restores the default enabled state; a present non-Boolean value means disabled.
+
+Reconciliation is idempotent and owns exactly `controller = null` or one live controller:
+
+```text
+requested enabled + no controller   -> call startContent(), retain result
+requested disabled + controller     -> call controller.stop(), clear result
+requested state already satisfied   -> no-op
+```
+
+The bootstrap does not optimistically start while storage is unresolved. If listener installation, reading, or controller startup fails, that context remains disabled. The popup confirms the stored desired state, not successful execution in every tab: protected pages, discarded Android contexts, and unexpected content-script failures cannot be acknowledged centrally without adding tab access and a background coordinator.
+
+`stop()` is a hard lifecycle boundary for that controller. It must be idempotent; disconnect every document/shadow observer; cancel its idle callback, timeout fallback, and cooldown timeout; clear strong-reference maps, root registries, queues, and resumable scanner state; and make every task/final-write path check the stopped generation before writing. Re-enabling always constructs a new controller and full initial traversal rather than attempting to revive cleared internal state.
+
+JavaScript tasks are not interrupted midway, and `storage.onChanged` delivery differs slightly by browser and process. Therefore “off” means no extension write after that context handles the disable event, not no write after the user's physical tap at an identical instant in every process. This limitation must be reflected in tests and user-facing wording.
+
 ## 8. Extension structure and manifests
 
 ### 8.1 Proposed source layout
@@ -588,20 +677,32 @@ Patching `Element.prototype.attachShadow` in the page's main world would improve
 ```text
 src/
   transform.js          pure parser/formatter
-  content.js            DOM traversal, scheduling, observation
+  content.js            explicit DOM-controller factory
+  settings.js           one-key storage schema and browser API adapter
+  bootstrap.js          document gate and controller lifecycle
+  popup.html            action-popup document
+  popup.css             responsive, accessible popup presentation
+  popup.js              switch interaction and error state
+icons/
+  icon-16.png
+  icon-32.png
+  icon-48.png
+  icon-128.png
 manifests/
   chrome.json
   firefox.json
 test/
   transform.test.js
   dom.test.js
+  settings.test.js
+  popup.test.js
   fixtures/
 scripts/
   package.mjs           deterministic packaging and artifact audit
   chrome-smoke.mjs      development-only real-browser smoke test
 ```
 
-The implementation may combine the two source files in a release without minification, but the source boundaries should remain visible. A bundler is unnecessary if files are listed in dependency order in `content_scripts.js` or a small checked-in build is generated deterministically.
+Keep these source boundaries visible in the release artifact and do not minify them. A bundler is unnecessary: content scripts are listed in dependency order, and `popup.html` loads `settings.js` before `popup.js` with external script elements. The popup must not use inline JavaScript, remote assets, a framework, or a third-party browser-API polyfill.
 
 ### 8.2 Minimal manifest shape
 
@@ -613,10 +714,26 @@ The Chrome manifest is conceptually:
   "name": "RFC3339ify",
   "version": "0.1.0",
   "minimum_chrome_version": "99",
+  "permissions": ["storage"],
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "action": {
+    "default_title": "RFC3339ify controls",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png"
+    }
+  },
   "content_scripts": [
     {
       "matches": ["http://*/*", "https://*/*"],
-      "js": ["transform.js", "content.js"],
+      "js": ["transform.js", "content.js", "settings.js", "bootstrap.js"],
       "run_at": "document_idle",
       "all_frames": true,
       "match_about_blank": true,
@@ -645,7 +762,7 @@ The Firefox artifact uses the same `content_scripts` block, omits Chrome's `mini
 }
 ```
 
-The implementation has selected the stable, non-personal UUID shown above. Do not change it after the first signed build. The explicit minimum versions implement the compatibility decision in section 4.1 and allow Mozilla's linter to evaluate desktop and Android separately. `required: ["none"]` declares the design's no-data-collection behavior; adding another data category requires security and privacy review. The `gecko_android` entry both makes Android availability explicit and prevents installation below the tested Android floor.
+The Firefox artifact uses the same `permissions`, `icons`, `action`, and content-script source list. The implementation has selected the stable, non-personal UUID shown above. Do not change it after the first signed build. The explicit minimum versions implement the compatibility decision in section 4.1 and allow Mozilla's linter to evaluate desktop and Android separately. `required: ["none"]` declares that the design collects/transmits no user data; an install-local feature Boolean is configuration, not page-data collection. Adding another stored field or data category requires security and privacy review. The `gecko_android` entry both makes Android availability explicit and prevents installation below the tested Android floor.
 
 Keep Firefox-specific keys out of the Chrome artifact if Chrome's validator warns about them. Manifest generation must be deterministic and tested against both store validators.
 
@@ -654,19 +771,19 @@ The Chrome artifact pins `minimum_chrome_version` because silently ignoring `mat
 Do not declare:
 
 - a background/service-worker script;
-- `tabs`, `scripting`, `storage`, `webRequest`, cookies, downloads, clipboard, history, or identity permissions;
+- `tabs`, `activeTab`, `scripting`, `webRequest`, cookies, downloads, clipboard, history, identity, `unlimitedStorage`, or any permission beyond the reviewed `storage` permission and static content-script access;
 - web-accessible resources;
 - externally connectable endpoints;
-- an extension page or action unless a later, reviewed configuration requirement justifies one; or
+- an extension page other than the reviewed action popup;
 - explicit host permissions duplicated beyond what the static content-script match patterns require.
 
 ### 8.3 Site-access tradeoff
 
 Automatic operation on every ordinary website inherently requests permission to read and change those pages. Restricting match patterns to `http://*/*` and `https://*/*` is narrower than `<all_urls>` because it excludes `file:`, FTP-like schemes, and direct local files, but it is still broad and will produce a prominent store permission warning.
 
-Version 1 uses broad static access. This is the smallest implementation, works at page load and in frames, and lets users apply browser-provided site-access controls where available. Firefox Android currently does not provide equivalent per-host editing in Add-ons Manager; users there must not be promised a per-site restriction control.
+Version 1 uses broad static access. This works at page load and in frames and lets users apply browser-provided site-access controls where available. Firefox Android currently does not provide equivalent per-host editing in Add-ons Manager; users there must not be promised a per-site restriction control. The built-in switch changes global runtime behavior but does not revoke the all-sites permission: while off, eligible pages still receive the small bootstrap so they can react to a later enable event, but no DOM controller is started and page text is not traversed.
 
-A future user-selected-sites mode would require optional host permissions plus registration/injection machinery and a UI. It could reduce default exposure but would add a service worker, state, extension APIs, more browser differences, and a failure mode where dates appear unconverted until access is granted.
+A future user-selected-sites mode is a separate product feature. It would need a definition of site identity, precedence between global and per-site states, popup/current-tab handling, permission semantics, state migration, and substantially more tests. Optional host permissions plus registration/injection machinery could reduce default exposure but would add browser differences and a failure mode where dates appear unconverted until access is granted. The global switch must not be presented as a per-site access control.
 
 The release description must be explicit that the extension code changes page text locally and never transmits it. Host-page code can still observe and react to the mutation as described in sections 9.3 and 15. Enterprise administrators can deploy an allowlist through browser policy if all-site access is unacceptable.
 
@@ -692,15 +809,17 @@ The release description must be explicit that the extension code changes page te
 
 - **No production dependencies:** removes the largest avoidable supply-chain surface.
 - **No network primitives:** production source must not call `fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `sendBeacon`, dynamic import, or DOM-based resource injection.
-- **No persistence or telemetry:** no page content, hostname, match count, or error is stored or sent. Diagnostic builds must not be published.
+- **Minimal configuration persistence, no telemetry:** `storage.local` contains only the Boolean `globalEnabled`. No page content, hostname, URL, tab identifier, match count, timestamp, or error is stored or sent. Diagnostic builds must not be published.
 - **Isolated world:** no page-world globals, monkeypatches, injected `<script>`, or `postMessage` bridge.
 - **Text-only writes:** setting `Text.data` cannot create markup, event handlers, navigation, or script execution.
 - **Fixed linear parser:** no backtracking-heavy user-controlled regular expression and no generic date parser.
 - **Bounded scheduling:** yields during large traversals and coalesces mutation work.
 - **Fail-closed grammar:** invalid and unsupported forms remain unchanged.
-- **Readable artifact:** do not minify or obfuscate release JavaScript. Include only the manifest, icons/license if needed, and the two small scripts.
+- **Readable artifact:** do not minify or obfuscate release JavaScript. Include only the manifest, reviewed icons/license files, content/bootstrap/settings scripts, and popup HTML/CSS/JavaScript.
 - **Deterministic release:** pin development tools, commit the lockfile if tools are introduced, generate both unsigned packages in CI, and publish their hashes. For a signed CRX/XPI, compare the payload against tagged source while explicitly excluding and auditing store-added signature metadata or store-controlled repackaging.
-- **Browser-enforced site access where available:** document the actual controls separately for Chrome desktop, Firefox desktop, and Firefox Android. Do not imply Firefox Android has per-host editing; disabling or uninstalling remains its reliable fallback.
+- **Browser-enforced site access where available:** document the actual controls separately for Chrome desktop, Firefox desktop, and Firefox Android. Do not imply Firefox Android has per-host editing. The built-in switch is the ordinary global pause; browser-level disabling or uninstalling remains the stronger fallback that unloads extension code.
+
+`storage.local` is not an encrypted secret store and is available to this extension's content-script contexts. That is acceptable only because the value is a non-sensitive feature Boolean. Page scripts cannot directly call the isolated extension storage API, but they can still infer enabled behavior by observing DOM changes. The storage schema is an allowlist of exactly one key; adding hostnames, page-derived data, or diagnostic history is a security-design change.
 
 No extension can prevent the host page from observing its DOM changes. A site can compare text content, detect normalization, or react through its own `MutationObserver`. The extension therefore does not promise invisibility to pages.
 
@@ -712,7 +831,8 @@ CI should fail if release source contains or declares unexpected capabilities, i
 - `eval`, `Function`, dynamic import, or remotely hosted code;
 - `innerHTML`/`outerHTML` writes;
 - page-world execution;
-- added manifest permissions, service workers, or web-accessible resources; or
+- manifest permissions other than `storage`, service workers, or web-accessible resources;
+- storage keys or writes other than the exact `globalEnabled` Boolean; or
 - files outside an explicit release allowlist.
 
 These checks supplement review; simple string scans alone are not a security proof.
@@ -805,6 +925,12 @@ Benchmarks should include a desktop browser and a mid-range Android Firefox devi
 
 Exact total convergence time is hardware-dependent and less important than responsiveness. Record benchmark hardware, browser version, fixture, median, and 95th-percentile results in a checked-in report before release.
 
+### 11.4 Disabled-state budget
+
+The global-off path must be materially cheaper than an active idle controller. Each eligible frame retains only the loaded bootstrap/settings code, one `storage.onChanged` listener, a small revision/state record, and the browser's extension context. It creates no `MutationObserver`, scans no DOM text, holds no DOM node, and schedules no periodic callback or timer. Static injection overhead remains because it is what permits a live page to turn back on without `tabs`/`scripting` permissions or a background worker.
+
+Benchmark a large multi-frame fixture in both states. Switching off must return controller-owned observer/root/cooldown/queue counts to zero after the disable event is handled, and an unchanged page left off for five minutes must show no extension timer wakeup or DOM work. The popup is ephemeral and must consume no resources after it closes.
+
 ## 12. Test strategy
 
 ### 12.1 Pure transformer tests
@@ -872,7 +998,30 @@ Using real DOM fixtures, verify:
 - a simulated framework overwrite is handled and rate-limited if adversarial; and
 - cooldown expires through the shared one-shot scheduler and a reused text node becomes eligible again.
 
-### 12.3 Browser integration tests
+### 12.3 Global-control and popup tests
+
+Settings/bootstrap tests must cover:
+
+- absent, Boolean `true`, Boolean `false`, malformed, and removed `globalEnabled` states;
+- storage API absence/read rejection and a controller-start exception, all of which leave that context disabled;
+- listener registration before the initial read and a change arriving while that read is pending, proving the stale read cannot overwrite the newer event;
+- unrelated storage areas/keys, repeated same-state events, and rapid off/on/off changes, proving reconciliation is idempotent;
+- initial enabled startup, initial disabled dormancy, disable, re-enable, and a fresh full traversal of content changed while off;
+- document, subframe, and enrolled open-shadow observers/queues/timers stopping without leaks;
+- cancellation of cooldown retries and a yielded scanner result, proving neither can write after its controller handles disable;
+- one context failing or being discarded without preventing independent contexts from converging; and
+- an inspected `storage.local` area containing no extension-owned key other than one Boolean `globalEnabled`.
+
+Popup tests must cover:
+
+- accessible name/state for the native checkbox, a label that activates its full touch target, logical focus order, and a polite live status region;
+- initial loading/indeterminate state, default enabled state, saved on/off confirmation, malformed-value repair, external `storage.onChanged` updates while open, and rapid interaction serialization;
+- read failure and write failure: never show an unconfirmed state as saved, revert to the last confirmed state when possible, expose a visible error, and permit an explicit retry;
+- responsive layout at desktop popup widths and Firefox Android's full-window overlay, at 200% text zoom and in light/dark color schemes;
+- at least a 48 CSS-pixel tap target, no hover-only disclosure, and operation with touch and keyboard/switch-control input; and
+- no auto-close after a change, network request, inline script, page/tab query, hostname display, badge update, or dynamic icon mutation.
+
+### 12.4 Browser integration tests
 
 Run the same fixtures in current supported versions of:
 
@@ -892,22 +1041,28 @@ Where the browser permits a test harness to reach them, top-level `blob:`, `data
 
 Also test CSP and Trusted Types pages, cross-origin frames under a second local origin, back/forward cache restoration, SPA updates, large virtualized lists, and sites with open shadow DOM.
 
-Firefox Android tests must cover the AMO-installed or equivalently signed MV3 artifact, the all-sites permission prompt, accepted and denied access, actual top-level/subframe injection after acceptance, the absence of per-host grant editing, and disable/uninstall recovery. These are release gates, not assumptions inferred from desktop Firefox.
+Desktop tests must open the action from both a pinned toolbar button and the browser's extensions menu, save each state, and verify all already-loaded eligible tabs/frames eventually follow it without reload. Firefox Android tests must cover the AMO-installed or equivalently signed MV3 artifact, the all-sites permission prompt, accepted and denied access, actual top-level/subframe injection after acceptance, action discovery under the Add-ons menu, full-overlay popup layout, global off/on propagation, process-discard/reload recovery, the absence of per-host grant editing, and browser-level disable/uninstall recovery. These are release gates, not assumptions inferred from desktop Firefox.
+
+The action popup must also remain usable while the active tab is a browser-protected, plain-text, or otherwise ineligible page. Changing the global setting there affects other eligible contexts even though the current page has no active bootstrap.
+
+Test restart/update persistence, storage clearing restoring the default-on state, and—where the browser allows the extension in private/incognito windows—the documented sharing or separation of the setting. A tab that predates installation or browser-level re-enablement and a discarded Android content-script context must be shown to require reload/navigation rather than being falsely reported as live. Already-normalized text must remain after global off until the page itself rerenders or reloads.
 
 Representative manual compatibility checks should include non-destructive views on GitHub and the Cloudflare dashboard. Tests must avoid changing real settings or submitting forms.
 
 Chrome Android testing should instead verify/document the platform non-support; it is not meaningful to claim a passing extension test on official Chrome Android.
 
-### 12.4 Security/release tests
+### 12.5 Security/release tests
 
 - Lint both manifests and build/load them as unpacked extensions.
 - Run Mozilla's official extension linter for the Firefox artifact.
 - Verify the Firefox artifact declares its stable Gecko ID, `required: ["none"]`, and `gecko_android` metadata.
+- Verify both manifests declare exactly `storage`, the reviewed `action` popup, static HTTP(S) content-script access, and no background, `tabs`, `activeTab`, or `scripting` capability.
 - Verify Chrome minimum 99, Firefox desktop minimum 140, Firefox Android minimum 142, and `match_origin_as_fallback` compatibility against current browser data before every release; raise a minimum if any included manifest feature requires it.
 - Inspect the final ZIP contents against a file allowlist.
 - Compare two clean builds for reproducibility.
 - Search release code for prohibited network, eval, HTML-sink, and page-world facilities.
-- Confirm in browser developer tools that the idle extension makes no network requests and has no background process.
+- Confirm in browser developer tools that the active and globally disabled extension make no network requests and have no background process.
+- Inspect extension storage after every test suite and assert that only a Boolean `globalEnabled` can persist.
 - Review every permission diff as a release-blocking change.
 
 ## 13. Dependencies and tooling
@@ -942,7 +1097,89 @@ Production telemetry and page-content logging are prohibited. A simple content s
 
 For support, diagnostics should be reproducible with public fixture pages and version/build identifiers. A temporary developer build may expose aggregate counters locally, but it must be clearly branded, never published to stores, and never log matched strings.
 
-Version 1 relies on browser extension controls where they exist. Chrome desktop and Firefox desktop can expose site-access management, although exact UI and grant semantics vary by release. Firefox Android currently cannot edit individual host grants in Add-ons Manager; its reliable controls are disabling or uninstalling the extension and then reloading affected tabs. A built-in per-site toggle is not recommended initially because it requires UI, storage, current-tab access, and cross-browser state synchronization. If Android field testing shows that whole-extension disablement is unacceptable, that is a product requirement for a separately reviewed access-control design, not something the store UI can be assumed to solve.
+### 14.1 Selected control
+
+Declare an MV3 `action` with `default_popup`. The popup contains one native checkbox whose full label row is clickable/tappable. This is the canonical control for `globalEnabled`; no background script is required because the popup writes directly to `storage.local`, and content-script bootstraps subscribe directly to `storage.onChanged`.
+
+The compact UI is:
+
+```text
+RFC3339ify
+
+[checkbox] Normalize dates and times
+
+On — applies to all eligible pages in this browser.
+```
+
+When off, replace the status text with:
+
+```text
+Off — future changes are stopped.
+Reload affected tabs to restore text from the page.
+```
+
+“Eligible” links or expands only if this can be done without making the popup cluttered; the store/help page provides the complete HTML/XHTML, protected-page, frame, and plain-text qualifications. The popup wording must not claim that prior DOM/application/server effects were rolled back or that every process changed atomically.
+
+### 14.2 Desktop interaction
+
+On Chrome and Firefox desktop, users may pin the neutral RFC3339ify action icon for quick access or open it through the browser's extensions menu. Opening the popup and toggling one control is preferred over an options page because it remains discoverable in the current browsing context without requiring the extension to know the current tab or site.
+
+After a tap/click, temporarily disable the checkbox, show `Saving…`, and perform one serialized Boolean write. On success, show the confirmed on/off text and leave the popup open so the user can read it. The confirmation means the desired setting was stored; it does not claim acknowledgements from every tab. If another extension context changes the value while the popup is open, its own `storage.onChanged` listener updates the checkbox and status.
+
+Do not use the icon or a badge as the authoritative state. A neutral static icon cannot become stale after a browser restart or Android process discard and does not require background initialization. The popup's confirmed checkbox is the sole state indicator.
+
+### 14.3 Firefox Android interaction
+
+In Firefox Android MV3, the action is reached from Firefox's menu through Add-ons and RFC3339ify. Mozilla documents that the popup opens as an overlay covering the browser window. Use that same popup document rather than an Android-specific UI or manifest.
+
+The layout must:
+
+- be responsive rather than set a desktop-only fixed width;
+- keep the labeled checkbox row at least 48 CSS pixels high and make the entire row the touch target;
+- use system fonts, logical CSS properties, sufficient contrast, and light/dark color-scheme support;
+- remain usable at large text sizes without clipping or horizontal scrolling;
+- require neither hover nor a hardware keyboard; and
+- retain native checkbox semantics, visible focus, and a polite live region for saving/success/error status.
+
+Do not auto-close the overlay after changing the setting. A persistent result is more important on Android, where reopening the path takes several taps and silent write failure would otherwise be easy to miss.
+
+Official Chrome on Android remains unsupported because it cannot install this extension. Extension-capable Chromium forks are not a reason to add browser-specific UI until one becomes a supported target.
+
+### 14.4 Loading and failure states
+
+On popup load, disable interaction, set the checkbox's programmatic `indeterminate` state, and show `Loading setting…` until a snapshot has been read. Decode it with the same rules as the bootstrap. For an absent or Boolean value, clear `indeterminate` and show the confirmed effective state. On read failure, keep the state unavailable/indeterminate, show a concise storage error, and expose a `Retry` button; do not guess that normalization is on or off.
+
+A present non-Boolean value is effectively off but is not a confirmed saved state. Show the unchecked control with `Stored setting is invalid; normalization is treated as off` and an explicit `Reset to Off` action that writes Boolean `false`; toggling on instead writes Boolean `true`. Do not silently preserve or display a malformed value as a valid saved setting.
+
+If a write fails, revert the checkbox to the last confirmed state when one exists, announce `Could not save the setting`, and leave an explicit retry path. Never show `On` or `Off` as saved merely because the user moved the control. Rapid interactions are serialized or disabled while a write is pending so an older Promise/callback cannot overwrite newer UI state. Error details belong in development tests, not in production console logs containing page context.
+
+The popup cannot distinguish a protected page, a tab without an injected bootstrap, or an Android-discarded extension context because the design intentionally requests no tab access and has no background coordinator. User documentation therefore says that most already-loaded eligible pages react on the fly and that reload/navigation is the recovery step when one does not.
+
+### 14.5 Browser-native fallback and alternatives
+
+Chrome/Firefox's extension manager remains the emergency control for disabling or uninstalling the complete extension. That unloads more code than global off. Re-enabling through browser-native controls may not inject static content scripts into tabs that were already loaded, so affected tabs may require reload/navigation. Desktop site-access controls remain usable where offered; Firefox Android users must not be promised per-host management that its Add-ons Manager does not provide.
+
+Rejected alternatives are:
+
+- **Direct one-click action toggle:** with no popup, `action.onClicked` must be handled by a background context. Chrome MV3 would require a service worker, while Firefox Android does not support MV3 background service workers. Divergent background manifests are disproportionate for one Boolean.
+- **Options page:** slower to reach, especially on Android, and adds no value for a single global setting.
+- **Keyboard command:** not available on Firefox Android and cannot be the primary mobile control.
+- **Injected page button or floating widget:** modifies privileged page UI, creates style/event conflicts, and exposes more extension behavior to the page.
+- **Per-site toggle:** needs site-identity, precedence, permission, and current-tab semantics and is explicitly a later product decision.
+- **Automatic rollback:** retaining every original string would create unbounded memory/privacy exposure and conflict with framework rerenders, node reuse, selection, and application state. Reloading is the only general DOM refresh path.
+- **`localStorage`:** popup and content scripts do not share an ordinary page storage origin, and it lacks the extension-wide change event and durability semantics needed here.
+- **`storage.sync`:** cross-device behavior differs across supported browsers and is specifically not Mozilla-account synchronization on Firefox Android.
+
+### 14.6 Remaining platform verification
+
+The architecture is settled, but these browser behaviors remain release-blocking empirical checks rather than assumptions:
+
+- the exact signed Firefox Android 142+ Add-ons-menu placement and popup overlay behavior when the all-sites permission is accepted versus denied;
+- whether a retained Android page automatically regains an extension context after process discard, or requires navigation/reload as expected;
+- regular/private-incognito sharing of `storage.local` and `storage.onChanged` on each target/configuration where private access is allowed; and
+- popup layout, system-back behavior, focus restoration, and error visibility on an actual touch device at large system text sizes.
+
+If any result contradicts the design, narrow the user-facing promise or raise the minimum browser version before adding a background context or a separate Firefox Android artifact. Menu labels and placement can change across browser releases, so help text should be version-tolerant while release tests record the exact tested path.
 
 ## 15. Implementation and release plan
 
@@ -951,14 +1188,15 @@ Version 1 relies on browser extension controls where they exist. Chrome desktop 
 3. Implement the MIME gate and node-local DOM engine without mutation observation; verify DOM integrity.
 4. Add chunked scheduling, shadow-root discovery, mutation coalescing, and loop/rate guards.
 5. Generate minimal Chrome and Firefox manifests, freeze the stable Gecko ID and minimum versions, and load both unpacked.
-6. Add real-MIME browser fixtures, cross-frame tests, editor/shadow/overload tests, large-page benchmarks, and signed Android Firefox permission coverage.
-7. Perform a manual security review of the complete release artifact and permission diff.
-8. Run a limited canary on representative read-only GitHub/Cloudflare pages, recording false positives and framework conflicts without collecting page data.
-9. Publish signed store artifacts from a tagged, reproducible unsigned baseline with hashes, an audited signature-metadata diff, and a plain-language privacy statement.
+6. Refactor browser auto-start into `startContent()`, then add the shared settings adapter, race-safe bootstrap, action popup, accessible static icons, and strict one-Boolean storage tests.
+7. Add real-MIME browser fixtures, cross-frame tests, editor/shadow/overload tests, global off/on lifecycle tests, popup tests, large-page benchmarks, and signed Android Firefox permission/action coverage.
+8. Perform a manual security review of the complete release artifact, storage schema, and permission diff.
+9. Run a limited canary on representative read-only GitHub/Cloudflare pages, recording false positives and framework conflicts without collecting page data.
+10. Publish signed store artifacts from a tagged, reproducible unsigned baseline with hashes, an audited signature-metadata diff, and a plain-language privacy statement.
 
-To stop future rewriting, disable/uninstall the extension or revoke its site access, then reload every affected tab. Disabling alone does not undo `Text.data` changes already present in a live document; a page rerender may also restore them.
+To stop future rewriting in ordinary use, switch `Normalize dates and times` off in the action popup. Browser-level disabling/uninstalling or site-access revocation remains a stronger fallback. None of these actions undo `Text.data` changes already present in a live document; reload affected tabs to request fresh page text, and note that a page rerender may independently restore it.
 
-The extension itself performs no network or storage operation, but it cannot guarantee that changes remain client-only. Host-page code can observe the DOM mutation, react to it, copy normalized text into application state, or transmit/persist that state. Reloading is therefore a DOM rollback, not a guarantee that an application-side or server-side reaction can be reversed. Conservative parsing and canary testing remain necessary on privileged sites.
+The extension performs no network operation and stores only the local `globalEnabled` Boolean, but it cannot guarantee that page-text changes remain client-only. Host-page code can observe the DOM mutation, react to it, copy normalized text into application state, or transmit/persist that state. Reloading is therefore a DOM refresh, not a guarantee that an application-side or server-side reaction can be reversed. Conservative parsing and canary testing remain necessary on privileged sites.
 
 ## 16. Resolved product decisions
 
@@ -972,13 +1210,14 @@ The following decisions are authoritative for version 1 and are incorporated int
 6. **Yearless dates:** both `Jan 1` and `1 Jan` become `01-01`; the unknown year is not inferred.
 7. **Times:** accept the exact meridiem forms in section 6.1 with zero through eight whitespace characters. Preserve syntactic second `60`; refuse fractional seconds.
 8. **Whitespace:** one through eight accepted whitespace code units form a date separator. Nine or more do not match. Time/meridiem separation permits zero through eight.
-9. **Site access:** enable automatic static content-script access on all HTTP and HTTPS sites, subject to browser-protected-origin restrictions and whatever user/administrator controls the specific browser supplies. Firefox Android does not currently provide per-host grant editing; disclose whole-extension disable/uninstall as its fallback.
+9. **Site access:** enable automatic static content-script access on all HTTP and HTTPS sites, subject to browser-protected-origin restrictions and whatever user/administrator controls the specific browser supplies. Firefox Android does not currently provide per-host grant editing; the built-in install-wide switch is the normal pause, while browser-level disable/uninstall remains the fallback.
 10. **Browser coverage:** release gates are Chrome desktop, Firefox desktop, and Firefox Android. Official Chrome Android is unsupported because it cannot run the extension.
 11. **Accessibility:** transform ARIA live-region text, accepting that a mutation can trigger an announcement.
 12. **Form choices:** exclude every `<select>`, `<datalist>`, and `<option>` text subtree because label mutation can change the submitted value when no explicit `value` exists, while other text in those controls is not ordinary page content.
 13. **Firefox packaging:** ship one Firefox MV3 artifact for desktop 140+ and Android 142+. Add a separate MV2 Android artifact only after a demonstrated MV3 blocker and a separate distribution/migration design.
 14. **Overload behavior:** bound pending work and observed open shadow roots by the section-7.5 constants. Queue overflow triggers lossless dirty-root recovery; exceeding the shadow-root cap deliberately leaves additional roots untouched.
 15. **Initial rendering:** conversion is incremental and eventually convergent, not atomic or guaranteed to be flash-free.
+16. **Global control:** use one default-on `globalEnabled` Boolean in `storage.local`, an action popup, and per-frame race-safe bootstraps. Global off stops future controller writes after event delivery but does not reconstruct already-normalized text. Do not add a background context, per-site state, synchronized state, badges, or tab permissions for this feature.
 
 
 ## 17. Acceptance criteria
@@ -991,33 +1230,40 @@ The first release is acceptable when:
 - dynamic mutations converge without self-triggered loops or long tasks;
 - mutation work registered after observer startup is never lost across initial, ordinary, dirty-root, or post-pass traversal;
 - documented iframe and open-shadow cases work, and inaccessible cases are accurately described;
-- the final manifests request no capability beyond static HTTP(S) content-script access;
+- the final manifests request no capability beyond static HTTP(S) content-script access and the `storage` permission needed for the one-Boolean global switch;
 - the Chrome manifest passes validation with minimum version 99;
 - the Firefox MV3 manifest passes AMO validation with its stable ID, `required: ["none"]`, desktop minimum 140, Android minimum 142, and explicit `gecko_android` metadata;
-- signed Firefox Android installation, permission acceptance/denial, injection, and disable/uninstall tests pass, and documentation does not claim unavailable per-site host controls;
+- desktop and Firefox Android action popups are discoverable, accessible, and correctly persist/propagate global off/on without a background context;
+- all bootstrap state/race/failure cases pass, disable prevents stale queued writes, and extension storage contains only a Boolean `globalEnabled`;
+- signed Firefox Android installation, permission acceptance/denial, injection, action overlay, and disable/uninstall tests pass, and documentation does not claim unavailable per-site host controls;
 - the artifact contains no production dependency, background worker, network code, telemetry, remote code, or page-world injection;
 - performance budgets pass on recorded desktop and Android test hardware;
-- security and permission review finds no unexplained artifact or capability; and
-- store/user documentation clearly discloses broad page-text access, local DOM modification, plain-text exclusion, restricted-page limits, and the lack of Chrome Android support.
+- security and permission review finds no unexplained artifact, storage field, or capability; and
+- store/user documentation clearly discloses broad page-text access, local DOM modification, global-switch/no-rollback semantics, plain-text exclusion, restricted-page limits, and the lack of Chrome Android support.
 
 ## 18. Reference material
 
 - [Chrome Extensions: content scripts](https://developer.chrome.com/docs/extensions/develop/concepts/content-scripts)
 - [Chrome manifest `content_scripts` reference](https://developer.chrome.com/docs/extensions/reference/manifest/content-scripts)
+- [Chrome Extensions: `chrome.action`](https://developer.chrome.com/docs/extensions/reference/api/action)
+- [Chrome Extensions: `chrome.storage`](https://developer.chrome.com/docs/extensions/reference/api/storage)
 - [Chrome Web Store Help: install and manage extensions](https://support.google.com/chrome_webstore/answer/2664769) — describes desktop installation and the phone “Add to Desktop” workflow.
 - [MDN: `content_scripts`](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/manifest.json/content_scripts)
+- [MDN: manifest `action`](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/manifest.json/action)
+- [MDN: WebExtensions `storage`](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/API/storage)
 - [MDN: `browser_specific_settings`](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/manifest.json/browser_specific_settings)
 - [MDN: `host_permissions`](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/manifest.json/host_permissions)
 - [MDN: `Document.contentType`](https://developer.mozilla.org/en-US/docs/Web/API/Document/contentType)
 - [MDN: `MutationObserver.observe()`](https://developer.mozilla.org/en-US/docs/Web/API/MutationObserver/observe)
 - [Mozilla Support: find and install add-ons on Firefox for Android](https://support.mozilla.org/en-US/kb/find-and-install-add-ons-firefox-android)
+- [Firefox Extension Workshop: differences between desktop and Android extensions](https://extensionworkshop.com/documentation/develop/differences-between-desktop-and-android-extensions/) — official action-popup, storage, and unsupported-commands behavior; page last updated 2024-01-17 when reviewed.
 - [Firefox Extension Workshop: developing extensions for Firefox for Android](https://extensionworkshop.com/documentation/develop/developing-extensions-for-firefox-for-android/) — official MV3 compatibility warning and Android development guidance; page source date 2023-11-12.
 - [Firefox Extension Workshop: distribute Manifest V2 and V3 extensions](https://extensionworkshop.com/documentation/publish/distribute-manifest-versions/) — confirms that one extension package cannot be both MV2 and MV3; its distribution examples are dated 2023-03-03 and must not be treated as current AMO channel policy without re-verification.
 - [Mozilla Bug 1812125](https://bugzilla.mozilla.org/show_bug.cgi?id=1812125) — Firefox Android host-permission editing limitation.
 
 ## 19. Initial implementation status
 
-As of 2026-07-29, the repository contains the pure resumable transformer, bounded DOM engine, Chrome/Firefox manifests, deterministic dependency-free release packager, DOM/grammar tests, and development-only Chrome/Firefox smoke-test drivers. The packaged runtime contains only `manifest.json`, `transform.js`, and `content.js`; it has no runtime dependency.
+As of 2026-07-29, the repository contains the pure resumable transformer, bounded DOM engine, Chrome/Firefox manifests, deterministic dependency-free release packager, DOM/grammar tests, and development-only Chrome/Firefox smoke-test drivers. The packaged runtime currently contains only `manifest.json`, `transform.js`, and `content.js`; it has no runtime dependency. Sections 5.5, 7.8, 8, 12.3, and 14 specify the next global-control change, which is designed but not yet implemented. Until that change lands, the current artifact still has no action or storage permission and requires browser-native controls plus reload to stop/restart processing.
 
 The current checkpoint has passed:
 
@@ -1027,4 +1273,4 @@ The current checkpoint has passed:
 - ZIP integrity and deterministic in-process byte-for-byte build checks; and
 - a zero-finding npm vulnerability audit for the pinned development dependency set.
 
-This checkpoint is not a release sign-off. Remaining gates include a signed Firefox Android 142+ installation/permission/injection test on a real device or emulator, recorded desktop/Android performance budgets, manual non-destructive GitHub and Cloudflare canaries, current store-policy/minimum-version revalidation, store assets and disclosures, and an explicit owner decision on the source license. Official Chrome Android remains unsupported for the platform reason in section 4.
+This checkpoint is not a release sign-off. Remaining work includes implementing and testing the designed global switch, then a signed Firefox Android 142+ installation/permission/injection/action test on a real device or emulator, recorded desktop/Android performance budgets, manual non-destructive GitHub and Cloudflare canaries, current store-policy/minimum-version revalidation, store assets and disclosures, and an explicit owner decision on the source license. Official Chrome Android remains unsupported for the platform reason in section 4.
