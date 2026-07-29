@@ -1,6 +1,6 @@
-# RFC3339ify WebExtension: detailed design draft
+# RFC3339ify WebExtension: detailed design
 
-Status: Draft for review
+Status: Implementation-ready; release validation gates remain
 
 Date: 2026-07-29
 
@@ -8,7 +8,7 @@ Target: Manifest V3 WebExtension for Chrome desktop and Firefox desktop/Android
 
 ## 1. Executive summary
 
-The extension rewrites a deliberately small set of English, human-readable date and 12-hour time forms in page text. Examples include:
+The extension rewrites a deliberately small set of English, human-readable date and 12-hour time forms contained within eligible individual DOM `Text` nodes. Examples include:
 
 | Input | Output |
 | --- | --- |
@@ -36,7 +36,7 @@ One requested target is not currently feasible: official Google Chrome on Androi
 
 ### 2.1 Functional goals
 
-- Normalize the explicitly supported date and time forms in human-facing text of live HTML and XHTML documents.
+- Normalize the explicitly supported date and time forms contained within each eligible individual `Text` node of live HTML and XHTML documents.
 - Preserve text outside the matched date/time span code-unit-for-code-unit.
 - Preserve weekday text, punctuation outside a match, timezone names, and timezone offsets. Weekdays are not parsed at all, so both `Tue` and strings such as `星期二` remain unchanged.
 - Process content inserted or changed after initial page load, including single-page application navigation, virtualized lists, and delayed API results.
@@ -71,15 +71,31 @@ One requested target is not currently feasible: official Google Chrome on Androi
 
 | Platform | Proposed support | Notes |
 | --- | --- | --- |
-| Chrome desktop | Supported | Manifest V3 static content script. Chrome-protected URLs remain inaccessible. |
+| Chrome desktop | Supported | Manifest V3 static content script; minimum Chrome 99 for `match_origin_as_fallback`. Chrome-protected URLs remain inaccessible. |
 | Chromium desktop derivatives | Best effort | Expected to work where ordinary Chrome MV3 extensions work; only named browsers are release gates. |
-| Firefox desktop | Supported | Manifest V3 WebExtension using the same content-script source. |
-| Firefox for Android | Supported | Distributed through Mozilla Add-ons and tested on an Android emulator/device. Firefox version minimum must be selected during implementation from the APIs actually used. |
+| Firefox desktop | Supported | Manifest V3 WebExtension using the same content-script source; minimum Firefox 140 for the required data-collection declaration. |
+| Firefox for Android | Supported | The same Firefox MV3 artifact, distributed through Mozilla Add-ons and tested on a physical device or emulator; minimum Firefox for Android 142. |
 | Chrome for Android | Not feasible | Official Chrome Android cannot install/run this extension. “Add to Desktop” from a phone installs it later on desktop, not on the phone. |
 | Android Chromium forks with extension support | Unsupported | May work, but their manifest/API/store compatibility and maintenance are outside the threat model and release matrix. |
 | Safari/iOS | Out of scope | Would require a separate packaging, signing, and compatibility effort. |
 
 The core uses only mature DOM APIs (`TreeWalker`, `MutationObserver`, `WeakMap`, and ordinary string operations). Browser-specific code should be confined to generated manifests and packaging metadata.
+
+### 4.1 Firefox Android manifest decision
+
+Mozilla's official Firefox Extension Workshop currently recommends Manifest V2 for extensions targeting Firefox for Android because Android does not have full desktop MV3 feature parity. The cited guidance was last updated on 2023-11-12 and identifies three concrete limitations: background service workers are unavailable, pending runtime host-permission requests lack a visible indication, and users cannot edit host-permission grants in Android's Add-ons Manager.
+
+Version 1 nevertheless uses one Firefox MV3 artifact for desktop and Android:
+
+- it has no background script or service worker;
+- it uses a static content script and never makes a runtime permission request; and
+- one artifact avoids divergent manifests, signing channels, version histories, and Android-only parser builds.
+
+The inability to edit host grants on Firefox Android still applies. Installation, acceptance and denial of the static all-sites grant, actual content-script injection, and the resulting permission UI are release gates on a real Android installation. The store description must say that per-site restriction may be unavailable on Firefox Android and that disabling or uninstalling the extension is the reliable fallback there.
+
+Do not create an MV2 build preemptively. If real-device testing exposes a concrete MV3 blocker, produce a separate generated Firefox Android MV2 package from the identical runtime source and design its AMO identity, listing/update channel, signing, version ordering, and migration path before publishing it. A single manifest/package cannot support MV2 and MV3 simultaneously.
+
+The selected minima are Firefox desktop 140 and Firefox Android 142. `match_origin_as_fallback` requires Firefox 128, while the current `data_collection_permissions` declaration requires Firefox 140 on desktop and Firefox 142 on Android; the latter requirement determines the release floor. Raising either minimum later requires a compatibility and store-metadata review.
 
 ## 5. Proposed product behavior
 
@@ -91,13 +107,16 @@ Every content-script instance performs this check before creating observers or t
 if document.contentType is neither
     "text/html" nor "application/xhtml+xml"
 then return permanently for this document
+
+if window.top is window and location.protocol is neither "http:" nor "https:"
+then return permanently for this document
 ```
 
 The URL suffix is deliberately irrelevant. A `.txt` URL served as HTML is eligible; an extensionless URL served as `text/plain` is not. The response `Content-Type`, exposed by `document.contentType`, is the authoritative boundary.
 
 This handles the motivating raw-patch case. Browsers commonly construct an internal HTML-shaped DOM to display `text/plain`, but `document.contentType` remains `text/plain`, so a DOM-shape or `<pre>` test would be incorrect.
 
-The gate is repeated independently inside every frame. Consequently, an HTML page may be transformed while an embedded plain-text frame is left alone.
+The MIME gate is repeated independently inside every frame. Consequently, an HTML page may be transformed while an embedded plain-text frame is left alone. The second gate enforces the declared top-level scheme boundary even if a browser's origin-fallback matching injects into a top-level `blob:`, `data:`, or `about:` document. Comparing the current window object with `window.top` does not read cross-origin parent state. Related non-HTTP(S) subframes remain eligible and still pass through their own MIME gate.
 
 ### 5.2 Meaning of “visible rendered text”
 
@@ -124,7 +143,7 @@ A strict computed-visibility mode is therefore rejected for version 1. If recons
 | --- | --- | --- |
 | Ordinary text nodes | Transform | Primary requirement. |
 | Text inside links, buttons, and table cells | Transform | It is rendered label text; link targets and element attributes are untouched. |
-| Text inside `<option>` | Leave untouched | Without an explicit `value` attribute, changing the label can also change the value submitted by a form. |
+| Text inside `<select>`, `<datalist>`, or `<option>` | Leave untouched | Without an explicit `value` attribute, changing an option label can also change the value submitted by a form; stray form-control text is not ordinary page content. |
 | Text inside `<pre>` or `<code>` in an HTML page | Transform | Approved for version 1; this can change copied code/log text. |
 | Inline SVG `<text>` inside an eligible HTML/XHTML document | Transform | It consists of reachable DOM text nodes. |
 | Open shadow DOM | Transform where discoverable | Requires a separate traversal/observer per shadow root. |
@@ -147,26 +166,33 @@ A strict computed-visibility mode is therefore rejected for version 1. If recons
 
 No URL-change or history hook is required for single-page applications because the document observer remains active. A full navigation creates a new document and a new content-script instance.
 
+Conversion is eventually convergent, not atomic. `document_idle` and bounded traversal mean the original spelling, or a mixture of original and normalized text on a large page, may be visible briefly. Version 1 does not hide the document or inject render-blocking CSS because doing so would increase page impact and failure risk. Store/user documentation must not promise flash-free conversion, and browser tests must measure time to convergence as well as individual task duration.
+
 ## 6. Transformation specification
 
 ### 6.1 Lexical tokens
 
-Version 1 uses a deterministic scanner with a fixed, explicit token set. Grammar notation in this section is descriptive: brackets mean an optional token, `|` means an alternative, and lookahead/boundary predicates do not consume input.
+Version 1 uses a deterministic scanner with a fixed, explicit token set. Grammar notation in this section is descriptive: brackets mean an optional token, `|` means an alternative, `*` means zero or more repetitions, `+` means one or more repetitions, and lookahead/boundary predicates do not consume input.
 
 ```text
 ASCII_DIGIT := "0".."9"
+DIGIT_RUN   := one or more ASCII digits, consumed maximally (recognition/refusal only)
+DAY_FIELD   := DIGIT_RUN used in a structural date core (recognition/refusal only)
 DAY         := one or two ASCII digits whose numeric value is 1..31
 YEAR2       := exactly two ASCII digits, 00..99
 YEAR4       := exactly four ASCII digits, 0001..9999
 HOUR12      := one or two ASCII digits, 1..12
-HOUR24      := exactly two ASCII digits, 00..23 (recognition/refusal only)
 MINUTE      := exactly two ASCII digits, 00..59
 SECOND      := exactly two ASCII digits, 00..60
 WSP         := ASCII space | tab | CR | LF | form feed | U+00A0
 SP          := WSP repeated 1..8 times
 OSP         := WSP repeated 0..8 times
 MERIDIEM    := AM | PM | am | pm | a.m. | p.m.
+MERIDIEM_LIKE := one character from A/a/P/p followed immediately by M/m
+                 | one character from A/a/P/p, ".", M/m, "."
 ```
+
+`MERIDIEM_LIKE` does not absorb sentence punctuation after an undotted token. Thus the period in `07:59 AM.` is outside the envelope: `AM` is accepted and the result is `07:59.`. Fully dotted mixed/uppercase variants such as `A.M.` and `p.M.` are recognized only so they can be refused consistently.
 
 `SECOND=60` is accepted syntactically so that a displayed leap-second value can be normalized. The extension does not have enough date/timezone context to prove that a particular occurrence is a real leap second; it preserves the value rather than inventing one.
 
@@ -229,8 +255,8 @@ The month token fixes the field roles in a day-first form: the leading number is
 
 Dates are validated before replacement:
 
-- month/day combinations must exist in the Gregorian calendar;
-- a `YEAR4` date uses the normal Gregorian leap-year rule;
+- month/day combinations must exist in the proleptic Gregorian calendar;
+- a `YEAR4` date uses the normal proleptic Gregorian leap-year rule for years `0001` through `9999`;
 - a yearless `Feb 29` is accepted because it is possible in some years;
 - a `YEAR2` `Feb 29` is accepted only when the unknown expanded year could be a leap year: `YY` is divisible by four, including `00`; and
 - an invalid recognized date envelope is refused as a whole and cannot fall back to a shorter form.
@@ -253,7 +279,16 @@ time12 := HOUR12 ":" MINUTE [":" SECOND] OSP MERIDIEM
 07:59:60 p.m.  -> 19:59:60
 ```
 
-Fractional seconds are out of scope. A recognized 12-hour time containing a fractional-second suffix is refused as a whole, so `07:59:59.123 AM` is unchanged rather than partially transformed. Invalid hours, minutes, seconds above 60, or malformed meridiem tokens are likewise left unchanged as complete recognizable envelopes.
+Fractional seconds are out of scope. For refusal, the recognizer uses this broader structural envelope:
+
+```text
+TIME_FIELD    := DIGIT_RUN
+time-envelope := TIME_FIELD ":" TIME_FIELD
+                 [":" TIME_FIELD ["." DIGIT_RUN]]
+                 WSP* MERIDIEM_LIKE
+```
+
+The starting and ending Unicode boundaries in section 6.4 apply to the structural envelope. A failed starting boundary produces `NO_MATCH`; after a valid start, a failed ending boundary refuses the recognized envelope. `time12` is the accepted subset. A structural envelope that has an invalid field width/value, more than eight whitespace characters, a fractional suffix, a merely meridiem-like token not in `MERIDIEM`, or a failed ending boundary returns `REFUSE` through the end of `MERIDIEM_LIKE`. Thus `07:59:59.123 AM`, `13:00 PM`, `07:59 P.M.`, and `07:59         AM` are unchanged as wholes. `DIGIT_RUN` and `WSP*` can be arbitrarily long, so their recognition must participate in the resumable scan described in section 11.2.
 
 ### 6.4 Boundaries, envelopes, and refusal
 
@@ -271,17 +306,36 @@ NO_MATCH                   copy one input code point and continue
 
 `REFUSE` is as important as `REPLACE`: advancing past the whole envelope prevents the scanner from finding an unintended inner or prefix match.
 
+For date suffix recognition, define:
+
+```text
+suffix-separators := a nonempty maximal run containing only WSP and ASCII ","
+year-like-suffix  := suffix-separators DIGIT_RUN
+```
+
+The `DIGIT_RUN` is not year-like when its immediately following character is `:`; that is the explicit time-field discriminator. An accepted year suffix is the narrower exact form `SP YEARn` or `"," SP YEARn`, where `YEARn` is `YEAR4` or `YEAR2`: there is exactly zero or one comma, a comma is adjacent to the date core, and the `SP` run contains one through eight characters. The broader `year-like-suffix` exists only to prevent malformed or invalid long input from falling back to the yearless core.
+
+`suffix-separators`, git-style `WSP+`, and their following digit runs are unbounded recognition constructs even though accepted separators and fields are bounded. They must be consumed monotonically with resumable state, not by an uninterruptible helper or by repeatedly rescanning the same prefix.
+
 Date recognition follows these rules in order:
 
-1. Recognize a month-first or day-first core without consuming any trailing boundary character.
-2. Before accepting a no-year core, inspect a possible comma/whitespace/numeric suffix and the explicitly recognized git-style time/year suffix. A digit run immediately followed by `:` is a time field, not a year suffix.
-3. Try an accepted `YEAR4` production first; if present, validate and either replace or refuse the complete envelope.
-4. Only when no `YEAR4` envelope is present, try an accepted `YEAR2` production and likewise replace or refuse it as a whole.
-5. Only when neither year-bearing envelope is present, consider the yearless form.
-6. If a suffix resembles a year but has a forbidden comma placement or a digit count other than two or four, refuse the complete envelope.
-7. If no year-shaped suffix exists and the core has a valid Unicode boundary, replace only the core. Following spaces, punctuation, and words are not consumed.
+1. Require a valid starting Unicode boundary, then recognize a structural month-first or day-first core using `DAY_FIELD`, without consuming any trailing boundary character. A failed starting boundary is `NO_MATCH`. Only a one- or two-digit value in the `DAY` range can later be accepted; another maximal day run makes the structural core a refusal candidate rather than permitting a shorter inner day.
+2. Inspect the explicitly recognized git-style time/year envelope before accepting the no-year core.
+3. Consume `suffix-separators` and the following maximal `DIGIT_RUN`, if any. If the run is immediately followed by `:`, disregard it as a year suffix and continue to the yearless decision.
+4. If the suffix has exact accepted syntax and the maximal digit run has four digits, try `YEAR4` first. A valid field, calendar date, and ending boundary produces `REPLACE`; any failure produces `REFUSE` from the core start through the digit run.
+5. Only when the maximal digit run has two digits, try `YEAR2`. A valid field, possible calendar date, and ending boundary produces `REPLACE`; any failure likewise refuses the complete core-plus-suffix envelope.
+6. Any other year-like suffix, including bad comma placement, a comma without a following `SP`, multiple commas, a separator run outside the one-to-eight limit, or a digit count other than two or four, returns `REFUSE` through the maximal digit run.
+7. Only when no git-style or year-like suffix is present, consider the yearless form. A valid core and ending boundary produces `REPLACE`; an invalid structurally recognizable core or failed ending boundary returns `REFUSE` through the structural core. Following spaces, punctuation, and non-numeric words are not consumed.
 
-The scanner also recognizes `(MON SP DAY | DAY SP MON) SP HOUR24:MINUTE[:SECOND] SP YEAR4` as an unsupported git-style envelope and refuses it. Thus `Mon Sep 17 00:00:00 2001` is unchanged rather than becoming `Mon 09-17 00:00:00 2001`. When a time field follows a yearless date without a trailing git-style year, the date and 12-hour time are independent candidates.
+Git-style refusal uses a broader structural production so invalid fields cannot expose the yearless prefix:
+
+```text
+git-like-envelope := structural-date-core WSP+
+                     TIME_FIELD ":" TIME_FIELD [":" TIME_FIELD]
+                     WSP+ DIGIT_RUN
+```
+
+After a valid starting boundary, every `git-like-envelope` is unsupported and returns `REFUSE` through its final maximal digit run, whether or not its fields would be valid. Thus `Mon Sep 17 00:00:00 2001` is unchanged rather than becoming `Mon 09-17 00:00:00 2001`, and malformed variants such as `Sep 17 99:00:00 2001` cannot expose `Sep 17`. When a time field follows a yearless date without a trailing git-style year, the date and 12-hour time are independent candidates.
 
 These examples are normative:
 
@@ -298,12 +352,23 @@ These examples are normative:
 | `Jan 1, pending` | `01-01, pending` | Non-numeric suffix is not consumed. |
 | `Jan 1 01:00 PM` | `01-01 13:00` | A colon disambiguates the following digits as a time, not `YEAR2`. |
 | `Jan 1, 123` | unchanged | Recognizable invalid year envelope; no prefix fallback. |
+| `Jan 1         1990` | unchanged | Nine separators make a recognized but invalid year envelope. |
+| `Jan 1 1990x` | unchanged | The `YEAR4` ending boundary fails; no shorter fallback. |
+| `Jan 1 123abc` | unchanged | The maximal three-digit year-like suffix is refused. |
+| `Jan 1 , 1990` | unchanged | A comma separated from the core is invalid. |
+| `Jan 1,, 1990` | unchanged | Multiple commas are invalid. |
+| `Jan 1,1990` | unchanged | A comma without a following `SP` is invalid. |
+| `Jan 1 0000` | unchanged | Year zero is outside `YEAR4`. |
+| `Jan 1,01:00 PM` | `01-01,13:00` | The colon makes `01` a time field; date and time are independent candidates. |
+| `Jan 1 123 Feb 2` | `Jan 1 123 02-02` | Refusal ends after `123`; the later date remains independently eligible. |
 | `Jan 1st` | unchanged | Identifier/ordinal boundary fails. |
 | `Feb 29, 2025` | unchanged | Invalid full date; no yearless fallback. |
 | `Tue, 28 Jul 2026 18:00:58 +0000` | `Tue, 2026-07-28 18:00:58 +0000` | Weekday, 24-hour time, and offset are outside the match. |
 | `星期二, 28 Jul 2026 01:00 PM +08:00` | `星期二, 2026-07-28 13:00 +08:00` | Arbitrary weekday text and offset remain untouched. |
 | `07:59AM` | `07:59` | Time spacing is optional. |
+| `07:59 AM.` | `07:59.` | Sentence punctuation is outside the plain meridiem token. |
 | `07:59:59.123 AM` | unchanged | Fractional-second envelope is refused. |
+| `07:59 P.M.` | unchanged | It is meridiem-like but not an accepted `MERIDIEM`. |
 | `Already 2026-07-28 18:00:58Z` | unchanged | No supported input form. |
 | `href="/archive/Jan 1"` | attribute unchanged | Attributes are never scanned. |
 
@@ -325,11 +390,12 @@ Use a small deterministic state machine rather than a general date library or `D
 The conceptual interfaces are:
 
 ```text
-scanAt(input, start) -> REPLACE | REFUSE | NO_MATCH
-transformText(input) -> string
+createTransform(input) -> TransformState
+resumeTransform(state, maxScannerSteps) -> YIELD | DONE(string)
+transformText(input) -> string  // test/convenience driver that resumes until DONE
 ```
 
-Both are pure functions with no DOM, locale, current date, timezone, browser, or extension-API dependency. This separation is the primary correctness and testability boundary.
+`TransformState` includes the input, current offset, partially recognized candidate/envelope, and output pieces created only after the first replacement. One scanner step accounts for a bounded number of code-point inspections/state transitions; no token or refusal recognizer may hide an unbounded digit/whitespace loop inside one step. The DOM engine uses `createTransform`/`resumeTransform`; it must not call the synchronous convenience driver on an unbounded node. All three interfaces are pure with no DOM, locale, current date, timezone, browser, or extension-API dependency. This separation is the primary correctness and testability boundary.
 
 ## 7. DOM processing design
 
@@ -342,13 +408,16 @@ static content script in each permitted frame
 document.contentType gate ---------------------> stop for non-HTML/XHTML
         |
         v
+start document MutationObserver
+        |
+        v
 queue initial document + discover open shadow roots
         |
         v
 TreeWalker yields eligible Text nodes
         |
         v
-pure transformText(Text.data)
+pure resumable transform of Text.data
         |
         v
 write Text.data only when changed
@@ -365,7 +434,7 @@ Use a static Manifest V3 content script with:
 - `run_at`: `document_idle`;
 - `all_frames`: `true`;
 - `match_about_blank`: `true`; and
-- `match_origin_as_fallback`: `true` where supported by the selected minimum browser versions.
+- `match_origin_as_fallback`: `true` (supported by Chrome 99+ and the selected Firefox minima).
 
 The default isolated execution world must be retained. The extension does not need access to page JavaScript variables and must not select the main world.
 
@@ -373,83 +442,119 @@ Related `about:blank`, `about:srcdoc`, `data:`, and `blob:` frames may inherit e
 
 ### 7.3 Node eligibility
 
-A `Text` node is eligible only when all of these are true:
+A `Text` node is eligible only when all of these are true at the moment it is processed:
 
-1. it is connected to the current document or an observed open shadow root;
+1. its composed root is the current document, and it is connected;
 2. it has a parent element;
 3. it is under the document body (or equivalent body content in XHTML), not `<head>`;
-4. its data passes a cheap prefilter for a supported month or meridiem token;
-5. no ancestor within the current tree is a non-content container; and
-6. it is not in an editable surface.
+4. no ancestor in its composed ancestor chain is a non-content container; and
+5. it is not in an editable surface.
 
-Non-content containers are identified by lowercased `localName`, with namespace-aware handling where needed:
+Ancestor evaluation starts at `parentElement`. On reaching a `ShadowRoot`, it continues at `ShadowRoot.host`, and repeats through any nested open-shadow host chain. This same composed walk is used for body containment, non-content checks, editable checks, editor-root checks, and document ownership. Merely being connected to some other document is insufficient.
+
+For elements in the HTML namespace (`http://www.w3.org/1999/xhtml`), non-content containers are identified by exact lowercase `localName` (the HTML parser canonicalizes ordinary HTML names; XHTML names remain case-sensitive):
 
 ```text
-script, style, noscript, template, textarea, option, title, head
+script, style, noscript, template, textarea, select, option, datalist, title, head
 ```
+
+For elements in the SVG namespace (`http://www.w3.org/2000/svg`), `script`, `style`, `title`, and `desc` are excluded; SVG `<text>` remains eligible. Elements from any other namespace are not excluded merely because their `localName` happens to equal an HTML/SVG container name. Namespace behavior must have XHTML, SVG, and mixed-namespace fixtures.
 
 Editable surfaces include:
 
 - an element for which `isContentEditable` is true;
 - descendants of an effective `contenteditable` editing host; and
-- conservative editor widgets such as an ancestor with `role="textbox"`.
+- a composed ancestor whose whitespace-tokenized `role` contains `textbox`, `searchbox`, or `combobox`.
 
-The editor rule is intentionally broader than the text-node-only rule because rich editors such as Monaco, CodeMirror, and Ace often render model text as ordinary spans. Rewriting those spans can desynchronize the editor's model, cursor, and screen.
+Also exclude a subtree below an ancestor with one of these exact, case-sensitive class tokens:
+
+```text
+monaco-editor, CodeMirror, cm-editor, ace_editor
+```
+
+These small, auditable known-editor exclusions are defense in depth because rich editors often render model text as ordinary spans. They are not a general editor detector: a renderer can put its visible layer beside rather than below its textbox, use a different class, or assign its class after insertion. Rewriting such an unrecognized render layer can desynchronize the model, cursor, and screen. Version 1 accepts that residual risk, tests current Monaco, CodeMirror 5/6, and Ace fixtures, and must describe failures as compatibility bugs rather than claiming complete editor protection. The observer watches `contenteditable` and `role`, but deliberately does not watch the globally noisy `class` attribute; eligibility is nevertheless rechecked whenever any other event queues the node/subtree.
+
+If `document.designMode` is `"on"`, all body text is treated as editable. A design-mode change has no dedicated DOM mutation signal, so it is noticed on the next queued text, child, `contenteditable`, or `role` event; prior replacements are not undone.
 
 Do not use `innerHTML`, `outerHTML`, `innerText`, or `outerText` setters. Updating only `Text.data` preserves the element tree, attributes, event handlers, and unrelated text nodes, and cannot turn page text into executable markup.
 
 ### 7.4 Initial traversal
 
+Immediately after the MIME gate, create and start the document `MutationObserver` before queuing or traversing initial content. JavaScript on the page cannot interleave inside that setup task, and every mutation after observer registration is therefore either visited by the initial walk or retained as mutation work. When an open shadow root is discovered, start its observer before queuing its traversal for the same reason.
+
 Create a `TreeWalker` with `NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT`. Its filter:
 
 - returns `FILTER_REJECT` for excluded elements, pruning their descendants;
-- inspects eligible elements for an open `shadowRoot`, queues a newly discovered root, and returns `FILTER_SKIP` so traversal continues into light-DOM children; and
+- inspects non-excluded elements for an open `shadowRoot`, registers and queues a newly discovered root, and returns `FILTER_SKIP` so traversal continues into light-DOM children;
+- returns `FILTER_SKIP` for every other non-excluded element; and
 - returns `FILTER_ACCEPT` for text nodes.
 
 The drain consumes only accepted text nodes. Using `SHOW_TEXT` alone would be insufficient because the filter would never see an excluded element and therefore could not prune that subtree.
 
 Traversal is incremental. A drain performs work until either a node-count limit or a short elapsed-time budget is reached, then yields via `requestIdleCallback` where available, with a bounded-time fallback based on `setTimeout`. It must not use an unbounded microtask loop because that can starve rendering and input.
 
-Provisional tuning targets, to be calibrated on Android hardware, are:
+Initial tuning constants, to be verified on Android hardware, are:
 
-- at most 4 ms of extension work in one foreground slice on desktop;
-- at most 2 ms in one foreground slice on Android;
+- at most 256 work items in one slice, where a TreeWalker step, mutation-record conversion, queued-node decision, or bounded lexer step group is a work item even when it produces no accepted text;
+- at most 2 ms of extension work in one foreground slice on every platform, avoiding user-agent detection;
 - an idle callback timeout so a continuously busy page still converges; and
 - no whole-document rescan in response to an ordinary subtree mutation.
 
-These are scheduling targets, not assumptions in correctness tests.
+The drain checks elapsed time between bounded work items; a document containing millions of elements but no text must still yield. Explicit loops over composed ancestors, removal cleanup, queued records, or other page-controlled collections are iterative, retain cursors, and count their hops as work items rather than using recursion. These are scheduling targets, not assumptions in correctness tests.
 
 ### 7.5 Mutation processing
 
-Each observed root uses one `MutationObserver` configured with:
+The document and each enrolled open shadow root have a small `RootState` containing their observer, pending-record batches, pending-node set, active traversal cursor, and overload flags. Start each observer before the corresponding initial traversal, configured with:
 
 ```text
 subtree: true
 childList: true
 characterData: true
-attributes: false
+attributes: true
+attributeFilter: ["contenteditable", "role"]
 ```
 
-For each delivery:
+The observer callback itself must be constant-time with respect to `records.length`: append the delivered record array as one batch, update a count by `records.length`, schedule the shared drain if necessary, and return. The drain consumes records incrementally under the same node/time slice budget before applying these rules:
 
 - enqueue the target of a relevant `characterData` record;
 - enqueue each added `Text` node directly;
 - enqueue each added element/subtree for incremental traversal;
-- ignore removed nodes;
+- enqueue removed subtrees for bounded shadow-observer cleanup, but never for text transformation;
+- enqueue the target subtree of a `contenteditable` or `role` record so descendants are re-evaluated under the current attribute value; this eligibility-change traversal also queues every encountered already-enrolled shadow root, because an outer host/ancestor change affects its composed descendants;
 - discard queued nodes that are disconnected when eventually processed; and
 - collapse child work when an ancestor subtree is already queued.
 
-The observer deliberately ignores attributes in the recommended render-candidate model. Attribute observation on dynamic applications is noisy and is needed only for a strict current-visibility policy.
+An attribute transition to an editable/excluded state prevents future writes but does not reconstruct text already normalized. A transition to an eligible state queues the subtree and makes it converge. Visibility-related attributes and `class` remain unobserved because CSS visibility is outside the selected model and global class observation is excessively noisy.
 
-Extension writes also create `characterData` records. Track the last extension-produced value per node in a `WeakMap<Text, string>`:
+Extension writes also create `characterData` records. Use these structures:
 
-- if a later record still has that exact value, it is already normalized and can be skipped;
-- if the page changed the value before delivery, the differing current value is processed; and
-- weak keys ensure removed nodes do not stay alive.
+- `pendingWrites: WeakMap<Text, string>` holds the expected value only from an extension write until the next coalesced observer delivery for that node;
+- `normalizedNodes: WeakSet<Text>` records that the node has previously received an extension write, without duplicating its text; and
+- conflict timestamps exist only for nodes that actually enter the section-10.1 rate guard.
 
-Idempotence is still mandatory and is the ultimate loop defense. The weak map avoids redundant work; it is not allowed to change transformation semantics.
+Coalesce all records for one text node before classification. If `pendingWrites.has(node)` and its current value equals `pendingWrites.get(node)`, delete the pending entry and skip the self-generated work. If a pending entry exists but the value differs, delete it and process the current value once as an external change. A later record without a pending entry is likewise external, but it counts toward the rate guard only when `normalizedNodes.has(node)` and transformation would require another write. This bounds duplicate string retention to the observer-delivery interval rather than the lifetime of every normalized node. Weak keys ensure removed nodes do not stay alive.
 
-Coalescing and a fixed time budget provide backpressure during mutation storms. If the work queue exceeds a tested threshold, it should replace many descendant entries with the smallest safe common roots, not drop content silently. A malicious or defective page can always consume its own main thread, but the extension must not multiply the cost of each mutation.
+Idempotence is still mandatory and is the ultimate loop defense. Observer bookkeeping avoids redundant work; it is not allowed to change transformation semantics.
+
+Coalescing and fixed limits provide deterministic backpressure:
+
+```text
+MAX_PENDING_ENTRIES_PER_ROOT = 1,024
+MAX_PENDING_ENTRIES_PER_DOCUMENT = 8,192
+MAX_PENDING_MUTATION_RECORDS = 8,192
+MAX_OBSERVED_SHADOW_ROOTS = 4,096
+```
+
+- Ancestor/descendant coalescing occurs only within one document or shadow root.
+- Pending mutation-record arrays and their node references are globally capped. If accepting a delivery would exceed the record cap, do not retain that batch: mark its root dirty and set a document-level `shadowCleanupSweep` bit. The dirty traversal recovers connected added/changed/attribute content, while an incremental sweep of the bounded active-host registry disconnects shadow observers whose hosts are no longer connected.
+- When one root exceeds its entry limit, clear its individual entries and replace them with one dirty-root traversal marker.
+- When the document-wide entry limit is reached, convert every root with individual pending entries to a dirty-root marker. At most one marker exists per root.
+- An observer continues collecting mutations during a full-root traversal into a bounded post-pass set. If that set overflows, set one `rescanAgain` bit. On completion, process the post-pass entries, or run one more full pass when the bit is set. Mutations are never discarded merely because the walker already passed their position.
+- Ordinary mutations scan only their added/changed subtrees; a whole-root scan is an explicit overload recovery path.
+
+At most 4,096 connected open shadow roots are enrolled. If the cap is reached, additional open roots are left untouched, `shadowCoverageLimited` is set for the document, and no observer or strong reference is retained for them. This is a documented fail-closed availability limit, preferable to unbounded observers on an adversarial page. When an enrolled host is later disconnected, bounded cleanup traverses the removed light subtree and any enrolled open roots reachable from its hosts, disconnects their observers, and removes their `RootState` entries. If coverage was limited, freeing a slot schedules one incremental document discovery pass so previously skipped connected roots can compete for it. If a removed host is reconnected before cleanup reaches it, it remains enrolled. Queue and shadow-root limit behavior is normative and must be tested.
+
+A malicious or defective page can still mutate faster than any extension can converge. Under continuous overload the extension guarantees bounded retained work and bounded synchronous slices, not a deadline for convergence.
 
 ### 7.6 Text split across DOM nodes
 
@@ -471,7 +576,7 @@ Version 1 deliberately misses split dates rather than restructuring privileged p
 
 ### 7.7 Shadow DOM
 
-During each traversal, discover and queue `element.shadowRoot` when it is an open root, then attach an observer to that root. Do the same for newly added elements and their descendants.
+During each traversal, discover `element.shadowRoot` when it is open, enroll it within the section-7.5 limit, attach its observer before scanning it, and then queue its traversal. Do the same for newly added elements and their descendants. The active-root registry retains a disconnected enrolled host only until bounded removal cleanup reaches it; cleanup disconnects and deletes shadow-root state, and reattachment permits fresh discovery. Eligibility-change and dirty-root recovery traversals queue every encountered already-enrolled root again rather than treating discovery as a no-op; this is required to recover an outer attribute change whose mutation-record batch was collapsed.
 
 Two cases cannot be covered without invasive behavior:
 
@@ -503,13 +608,14 @@ The implementation may combine the two source files in a release without minific
 
 ### 8.2 Minimal manifest shape
 
-The shared/Chrome manifest is conceptually:
+The Chrome manifest is conceptually:
 
 ```json
 {
   "manifest_version": 3,
   "name": "RFC3339ify",
   "version": "0.1.0",
+  "minimum_chrome_version": "99",
   "content_scripts": [
     {
       "matches": ["http://*/*", "https://*/*"],
@@ -523,26 +629,30 @@ The shared/Chrome manifest is conceptually:
 }
 ```
 
-The Firefox artifact adds current Mozilla signing, disclosure, and Android-availability metadata:
+The Firefox artifact uses the same `content_scripts` block, omits Chrome's `minimum_chrome_version`, and adds current Mozilla signing, disclosure, and Android-availability metadata:
 
 ```json
 {
   "browser_specific_settings": {
     "gecko": {
       "id": "rfc3339ify@example.invalid",
-      "strict_min_version": "<minimum-supported-Firefox>",
+      "strict_min_version": "140.0",
       "data_collection_permissions": {
         "required": ["none"]
       }
     },
-    "gecko_android": {}
+    "gecko_android": {
+      "strict_min_version": "142.0"
+    }
   }
 }
 ```
 
-The identifier shown is a placeholder. Select a stable, non-personal identifier before the first signed build and never change it afterward. Select `strict_min_version` from the oldest Firefox desktop/Android version in the tested release matrix. `required: ["none"]` declares the design's no-data-collection behavior; adding another data category requires security and privacy review. `gecko_android: {}` makes Android availability explicit when no Android-specific version override is needed.
+The identifier shown is a placeholder. Select a stable, non-personal identifier before the first signed build and never change it afterward. The explicit minimum versions implement the compatibility decision in section 4.1 and allow Mozilla's linter to evaluate desktop and Android separately. `required: ["none"]` declares the design's no-data-collection behavior; adding another data category requires security and privacy review. The `gecko_android` entry both makes Android availability explicit and prevents installation below the tested Android floor.
 
 Keep Firefox-specific keys out of the Chrome artifact if Chrome's validator warns about them. Manifest generation must be deterministic and tested against both store validators.
+
+The Chrome artifact pins `minimum_chrome_version` because silently ignoring `match_origin_as_fallback` would violate the documented related-frame behavior. Re-check the minimum against current Chrome compatibility data before release.
 
 Do not declare:
 
@@ -557,7 +667,7 @@ Do not declare:
 
 Automatic operation on every ordinary website inherently requests permission to read and change those pages. Restricting match patterns to `http://*/*` and `https://*/*` is narrower than `<all_urls>` because it excludes `file:`, FTP-like schemes, and direct local files, but it is still broad and will produce a prominent store permission warning.
 
-Version 1 uses broad static access. This is the smallest implementation, works at page load and in frames, and lets users apply browser-provided site-access controls where available.
+Version 1 uses broad static access. This is the smallest implementation, works at page load and in frames, and lets users apply browser-provided site-access controls where available. Firefox Android currently does not provide equivalent per-host editing in Add-ons Manager; users there must not be promised a per-site restriction control.
 
 A future user-selected-sites mode would require optional host permissions plus registration/injection machinery and a UI. It could reduce default exposure but would add a service worker, state, extension APIs, more browser differences, and a failure mode where dates appear unconverted until access is granted.
 
@@ -592,8 +702,8 @@ The release description must be explicit that the extension code changes page te
 - **Bounded scheduling:** yields during large traversals and coalesces mutation work.
 - **Fail-closed grammar:** invalid and unsupported forms remain unchanged.
 - **Readable artifact:** do not minify or obfuscate release JavaScript. Include only the manifest, icons/license if needed, and the two small scripts.
-- **Deterministic release:** pin development tools, commit the lockfile if tools are introduced, generate both packages in CI, publish hashes, and verify that store artifacts match tagged source.
-- **Browser-enforced site access:** document how users/administrators can restrict or disable the extension per site/browser.
+- **Deterministic release:** pin development tools, commit the lockfile if tools are introduced, generate both unsigned packages in CI, and publish their hashes. For a signed CRX/XPI, compare the payload against tagged source while explicitly excluding and auditing store-added signature metadata or store-controlled repackaging.
+- **Browser-enforced site access where available:** document the actual controls separately for Chrome desktop, Firefox desktop, and Firefox Android. Do not imply Firefox Android has per-host editing; disabling or uninstalling remains its reliable fallback.
 
 No extension can prevent the host page from observing its DOM changes. A site can compare text content, detect normalization, or react through its own `MutationObserver`. The extension therefore does not promise invisibility to pages.
 
@@ -666,7 +776,9 @@ Only MIME type is authoritative. The test suite must use a real HTTP server retu
 
 ### 11.1 Fast path
 
-Most text nodes contain no candidate. Before invoking the full scanner, check cheaply for one of the accepted month prefixes/casings or for a colon plus a possible `A`, `a`, `P`, or `p` meridiem sequence. The prefilter must cover no-space and dotted meridiem forms and must have no false negatives for the accepted grammar. Do not lowercase every node or allocate a normalized copy.
+Most text nodes contain no candidate. For a node of at most 4,096 UTF-16 code units, check cheaply for one of the accepted month prefixes/casings or for a colon plus a possible `A`, `a`, `P`, or `p` meridiem sequence before invoking the full scanner. The prefilter must cover no-space and dotted meridiem forms and must have no false negatives for the accepted grammar. Do not lowercase every node or allocate a normalized copy.
+
+Do not run repeated whole-string native searches as an allegedly cheap prefilter on a larger node, because their uninterrupted execution would bypass the slice budget. Nodes above 4,096 code units enter the resumable lexer directly; its ordinary no-match path doubles as a bounded prefilter. The 4,096-code-unit threshold is a scheduling constant, not a semantic size limit.
 
 When there is no match:
 
@@ -676,9 +788,9 @@ When there is no match:
 
 ### 11.2 Large nodes
 
-A single huge HTML text node can defeat a per-node time budget. The lexer must therefore expose resumable state: current input offset, current recognizer/envelope state, and already-produced output pieces. It may yield between code points/tokens and resume without rescanning a growing prefix. This is preferable to fixed-overlap chunks because an invalid numeric suffix can contain an arbitrarily long digit run even though accepted tokens have fixed lengths.
+A single huge HTML text node can defeat a per-node time budget. The lexer must therefore expose resumable state: current input offset, current recognizer/envelope state, and already-produced output pieces. It may yield between code points/tokens and resume without rescanning a growing prefix. This is preferable to fixed-overlap chunks because refusal-only digit and whitespace/separator runs can be arbitrarily long even though accepted tokens have fixed lengths.
 
-Before writing the completed result, verify that the node still contains the original input/generation. If the page changed it during a yielded scan, discard the stale result and queue the current value. The stale result must never overwrite newer page content.
+Before every resume and again before writing the completed result, verify that the node still contains the captured input string. If the page changed it during a yielded scan, discard the stale state and queue the current value. The stale result must never overwrite newer page content. Equality with the captured immutable string is sufficient for output safety; a page that changes away and back to the identical value does not require a different result.
 
 An arbitrary size cutoff is not recommended because it creates silent correctness gaps on large log/code views. A documented emergency cap may be added only after memory tests demonstrate a concrete need.
 
@@ -687,8 +799,9 @@ An arbitrary size cutoff is not recommended because it creates silent correctnes
 Benchmarks should include a desktop browser and a mid-range Android Firefox device/emulator. Proposed release gates are:
 
 - no extension-caused task longer than 16 ms in the standard large-page fixture;
-- traversal slices meet the 4 ms desktop / 2 ms Android targets at the 95th percentile;
+- traversal slices meet the universal 2 ms target at the 95th percentile;
 - a 100,000-text-node, 5 MiB fixture converges without input becoming unresponsive;
+- a single multi-megabyte candidate-free text node never enters an unbounded native prefilter and is scanned resumably;
 - mutation cost scales with changed/added subtrees rather than total document size;
 - steady state creates no timer loop and near-zero CPU use when the DOM is idle; and
 - packaged code remains on the order of tens of KiB, excluding icons and test tooling.
@@ -708,7 +821,7 @@ Table-driven positive tests cover:
 - month-first and day-first `YEAR2`, each with and without a comma;
 - literal unknown-century outputs such as `??99-12-31`;
 - leap years (`2000`, `2024`), non-leap century/year cases (`1900`, `2025`), and possible/impossible `YEAR2` leap days;
-- midnight, noon, every approved meridiem spelling, zero/eight-character time spacing, seconds `59`, and syntactically accepted seconds `60`;
+- midnight, noon, every approved meridiem spelling, plain-meridiem sentence punctuation, zero/eight-character time spacing, seconds `59`, and syntactically accepted seconds `60`;
 - multiple independent matches in one string;
 - weekday and timezone preservation; and
 - every supported whitespace character plus runs of exactly one and eight code units.
@@ -718,10 +831,10 @@ Negative tests cover:
 - `Jan 0`, `Jan 32`, `Apr 31`, `Feb 30`, impossible `YEAR2` leap dates, and invalid `YEAR4` leap dates;
 - `00:00 AM`, `13:00 PM`, `01:60 PM`, seconds `61`, and malformed time fields;
 - mixed-case months, ordinals, unsupported month/meridiem spellings, and fractional seconds;
-- numeric year suffixes of one, three, or five-plus digits and malformed comma placement;
-- recognized invalid/unsupported larger dates, including `Feb 29, 2025`, `Jan 1, 123`, and `Mon Sep 17 00:00:00 2001`, which must not partially rewrite;
+- numeric year suffixes of one, three, or five-plus digits; zero year; failed year boundaries; one-to-eight versus nine-plus suffix spacing; and missing post-comma whitespace, misplaced commas, or multiple commas, using the exact normative cases in section 6.4;
+- recognized invalid/unsupported larger dates, including `Feb 29, 2025`, `Jan 1, 123`, `Mon Sep 17 00:00:00 2001`, and malformed `Sep 17 99:00:00 2001`, which must not partially rewrite;
 - identifier adjacency such as `fooJan 1`, `éJan 1`, `变量Jan 1`, `Jan 1st`, and `AM_variable`;
-- runs of nine accepted whitespace code units;
+- runs of nine accepted whitespace code units, including both an otherwise valid date separator and a year-like suffix separator;
 - already normalized ISO/RFC-like dates and 24-hour times; and
 - random Unicode surrounding text.
 
@@ -731,9 +844,13 @@ Property/fuzz tests assert:
 - the function never throws for arbitrary JavaScript strings, including lone surrogates;
 - output outside reported replacement spans is unchanged;
 - `REFUSE` copies the entire recognized envelope unchanged and prevents inner/prefix matches;
+- `REFUSE(end)` stops at the defined maximal digit run or `MERIDIEM_LIKE` end, so a later independently bounded date/time remains eligible;
 - `YEAR4`, `YEAR2`, and yearless precedence is respected, including invalid-longer-form refusal;
 - every emitted month/day/time field satisfies its range; and
-- runtime grows approximately linearly with input size.
+- driving `resumeTransform` with any positive scanner-step budget produces the same result as `transformText`; and
+- runtime and counted scanner steps grow approximately linearly with input size.
+
+Stress properties separately generate very long `DIGIT_RUN`, `suffix-separators`, git-style `WSP+`, and time-envelope `WSP*` sequences. They assert bounded-slice resumability and prove that resumption does not rescan an ever-growing prefix.
 
 ### 12.2 DOM unit tests
 
@@ -741,14 +858,20 @@ Using real DOM fixtures, verify:
 
 - only `Text.data` changes and element/attribute identity is stable;
 - excluded containers and editable surfaces remain untouched;
-- visible labels, HTML `<pre>/<code>`, ARIA live regions, inline SVG, and open shadow roots are transformed;
+- visible labels outside excluded form/editor surfaces, HTML `<pre>/<code>`, ARIA live regions, inline SVG, and open shadow roots are transformed;
 - `<option>`, non-content containers, and editable/editor surfaces remain unchanged;
 - split-node dates remain unchanged;
 - initial and dynamically added content converge;
+- the document observer is active before the first traversal yield, and a mutation between initial slices is not lost;
 - direct `characterData` edits converge;
+- `contenteditable` and `role` transitions re-evaluate light-DOM and already-enrolled shadow descendants without undoing prior output;
 - extension-generated mutation records do not loop;
-- removed/reattached nodes do not leak or throw;
-- burst additions are coalesced;
+- composed-ancestor exclusions cross one and multiple open-shadow host boundaries;
+- current Monaco, CodeMirror 5/6, and Ace fixtures are excluded, with a negative fixture documenting an unrecognized sibling render layer;
+- removed/reattached shadow hosts disconnect or re-enroll observers without leaking or throwing;
+- burst additions are coalesced, one oversized observer delivery does not create an unbounded callback, per-root/global record and node-queue overflow takes the specified dirty-root path, and post-pass mutations are not lost;
+- the 4,096-shadow-root cap fails closed and a later freed slot triggers discovery retry;
+- a deeply nested light/shadow DOM exercises iterative, resumable ancestor and cleanup walks without recursion or long tasks;
 - a simulated framework overwrite is handled and rate-limited if adversarial; and
 - cooldown expires through the shared one-shot scheduler and a reused text node becomes eligible again.
 
@@ -768,7 +891,11 @@ A local HTTP server must serve separate routes with these MIME types:
 - an HTML parent with a plain-text iframe — parent transformed, frame untouched; and
 - allowed and special related frames (`about:blank`, `srcdoc`, `blob:`) as browser support permits.
 
+Where the browser permits a test harness to reach them, top-level `blob:`, `data:`, and `about:` HTML documents must remain untouched even if origin-fallback matching injects the script; the explicit top-level scheme gate, not an assumption about manifest matching, enforces this result.
+
 Also test CSP and Trusted Types pages, cross-origin frames under a second local origin, back/forward cache restoration, SPA updates, large virtualized lists, and sites with open shadow DOM.
+
+Firefox Android tests must cover the AMO-installed or equivalently signed MV3 artifact, the all-sites permission prompt, accepted and denied access, actual top-level/subframe injection after acceptance, the absence of per-host grant editing, and disable/uninstall recovery. These are release gates, not assumptions inferred from desktop Firefox.
 
 Representative manual compatibility checks should include non-destructive views on GitHub and the Cloudflare dashboard. Tests must avoid changing real settings or submitting forms.
 
@@ -779,6 +906,7 @@ Chrome Android testing should instead verify/document the platform non-support; 
 - Lint both manifests and build/load them as unpacked extensions.
 - Run Mozilla's official extension linter for the Firefox artifact.
 - Verify the Firefox artifact declares its stable Gecko ID, `required: ["none"]`, and `gecko_android` metadata.
+- Verify Chrome minimum 99, Firefox desktop minimum 140, Firefox Android minimum 142, and `match_origin_as_fallback` compatibility against current browser data before every release; raise a minimum if any included manifest feature requires it.
 - Inspect the final ZIP contents against a file allowlist.
 - Compare two clean builds for reproducibility.
 - Search release code for prohibited network, eval, HTML-sink, and page-world facilities.
@@ -805,13 +933,19 @@ If npm dependencies are introduced:
 - build in a clean, locked CI environment; and
 - prove the extension ZIP contains no `node_modules` or development code.
 
+### 13.3 Distribution
+
+Distribution depends on Chrome Web Store and Mozilla Add-ons developer accounts, current store-policy acceptance, signing services, stable extension identifiers, and the stores' continued support for the selected manifests and platforms. Before the first release, prepare the required icons/listing assets, source and license notices, a plain-language privacy disclosure, support contact, and reproducible-build instructions.
+
+The CI-produced unsigned ZIPs are the reproducibility baseline. Store-signed CRX/XPI files may contain signatures or store-generated metadata, so verification compares their executable/resource payload against the baseline and separately inventories every store-added entry. Android availability, version compatibility, and permission presentation must be checked on the published AMO listing, not only with a temporarily loaded extension.
+
 ## 14. Observability and user control
 
 Production telemetry and page-content logging are prohibited. A simple content script also has no safe reason to print matches to the browser console, where sensitive page text or noisy logs could appear.
 
 For support, diagnostics should be reproducible with public fixture pages and version/build identifiers. A temporary developer build may expose aggregate counters locally, but it must be clearly branded, never published to stores, and never log matched strings.
 
-Version 1 relies on browser extension controls to disable the extension or restrict site access. A built-in per-site toggle is not recommended initially because it requires UI, storage, current-tab access, and cross-browser state synchronization. It can be designed later if field testing shows that browser controls are insufficient.
+Version 1 relies on browser extension controls where they exist. Chrome desktop and Firefox desktop can expose site-access management, although exact UI and grant semantics vary by release. Firefox Android currently cannot edit individual host grants in Add-ons Manager; its reliable controls are disabling or uninstalling the extension and then reloading affected tabs. A built-in per-site toggle is not recommended initially because it requires UI, storage, current-tab access, and cross-browser state synchronization. If Android field testing shows that whole-extension disablement is unacceptable, that is a product requirement for a separately reviewed access-control design, not something the store UI can be assumed to solve.
 
 ## 15. Implementation and release plan
 
@@ -819,11 +953,11 @@ Version 1 relies on browser extension controls to disable the extension or restr
 2. Implement the pure scanner and exhaustive unit/property tests.
 3. Implement the MIME gate and node-local DOM engine without mutation observation; verify DOM integrity.
 4. Add chunked scheduling, shadow-root discovery, mutation coalescing, and loop/rate guards.
-5. Generate minimal Chrome and Firefox manifests and load both unpacked.
-6. Add real-MIME browser fixtures, cross-frame tests, large-page benchmarks, and Android Firefox coverage.
+5. Generate minimal Chrome and Firefox manifests, freeze the stable Gecko ID and minimum versions, and load both unpacked.
+6. Add real-MIME browser fixtures, cross-frame tests, editor/shadow/overload tests, large-page benchmarks, and signed Android Firefox permission coverage.
 7. Perform a manual security review of the complete release artifact and permission diff.
 8. Run a limited canary on representative read-only GitHub/Cloudflare pages, recording false positives and framework conflicts without collecting page data.
-9. Publish signed store artifacts from a tagged, reproducible build with hashes and a plain-language privacy statement.
+9. Publish signed store artifacts from a tagged, reproducible unsigned baseline with hashes, an audited signature-metadata diff, and a plain-language privacy statement.
 
 To stop future rewriting, disable/uninstall the extension or revoke its site access, then reload every affected tab. Disabling alone does not undo `Text.data` changes already present in a live document; a page rerender may also restore them.
 
@@ -841,10 +975,13 @@ The following decisions are authoritative for version 1 and are incorporated int
 6. **Yearless dates:** both `Jan 1` and `1 Jan` become `01-01`; the unknown year is not inferred.
 7. **Times:** accept the exact meridiem forms in section 6.1 with zero through eight whitespace characters. Preserve syntactic second `60`; refuse fractional seconds.
 8. **Whitespace:** one through eight accepted whitespace code units form a date separator. Nine or more do not match. Time/meridiem separation permits zero through eight.
-9. **Site access:** enable automatic static content-script access on all HTTP and HTTPS sites, subject to browser-protected-origin restrictions and user/administrator site controls.
+9. **Site access:** enable automatic static content-script access on all HTTP and HTTPS sites, subject to browser-protected-origin restrictions and whatever user/administrator controls the specific browser supplies. Firefox Android does not currently provide per-host grant editing; disclose whole-extension disable/uninstall as its fallback.
 10. **Browser coverage:** release gates are Chrome desktop, Firefox desktop, and Firefox Android. Official Chrome Android is unsupported because it cannot run the extension.
 11. **Accessibility:** transform ARIA live-region text, accepting that a mutation can trigger an announcement.
-12. **Options:** exclude every `<option>` text subtree because label mutation can change the submitted value when no explicit `value` exists.
+12. **Form choices:** exclude every `<select>`, `<datalist>`, and `<option>` text subtree because label mutation can change the submitted value when no explicit `value` exists, while other text in those controls is not ordinary page content.
+13. **Firefox packaging:** ship one Firefox MV3 artifact for desktop 140+ and Android 142+. Add a separate MV2 Android artifact only after a demonstrated MV3 blocker and a separate distribution/migration design.
+14. **Overload behavior:** bound pending work and observed open shadow roots by the section-7.5 constants. Queue overflow triggers lossless dirty-root recovery; exceeding the shadow-root cap deliberately leaves additional roots untouched.
+15. **Initial rendering:** conversion is incremental and eventually convergent, not atomic or guaranteed to be flash-free.
 
 
 ## 17. Acceptance criteria
@@ -855,9 +992,12 @@ The first release is acceptable when:
 - HTTP(S) `text/plain` fixtures, including a raw patch, are demonstrably untouched;
 - HTML and XHTML fixtures transform only eligible text nodes and preserve all attributes/elements;
 - dynamic mutations converge without self-triggered loops or long tasks;
+- mutation work registered after observer startup is never lost across initial, ordinary, dirty-root, or post-pass traversal;
 - documented iframe and open-shadow cases work, and inaccessible cases are accurately described;
 - the final manifests request no capability beyond static HTTP(S) content-script access;
-- the Firefox manifest passes AMO validation with its stable ID, `required: ["none"]`, `gecko_android`, and tested minimum version;
+- the Chrome manifest passes validation with minimum version 99;
+- the Firefox MV3 manifest passes AMO validation with its stable ID, `required: ["none"]`, desktop minimum 140, Android minimum 142, and explicit `gecko_android` metadata;
+- signed Firefox Android installation, permission acceptance/denial, injection, and disable/uninstall tests pass, and documentation does not claim unavailable per-site host controls;
 - the artifact contains no production dependency, background worker, network code, telemetry, remote code, or page-world injection;
 - performance budgets pass on recorded desktop and Android test hardware;
 - security and permission review finds no unexplained artifact or capability; and
@@ -870,7 +1010,11 @@ The first release is acceptable when:
 - [Chrome Web Store Help: install and manage extensions](https://support.google.com/chrome_webstore/answer/2664769) — describes desktop installation and the phone “Add to Desktop” workflow.
 - [MDN: `content_scripts`](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/manifest.json/content_scripts)
 - [MDN: `browser_specific_settings`](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/manifest.json/browser_specific_settings)
+- [MDN: `host_permissions`](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/manifest.json/host_permissions)
 - [MDN: `Document.contentType`](https://developer.mozilla.org/en-US/docs/Web/API/Document/contentType)
 - [MDN: `MutationObserver.observe()`](https://developer.mozilla.org/en-US/docs/Web/API/MutationObserver/observe)
 - [MDN: `Document.createTreeWalker()`](https://developer.mozilla.org/en-US/docs/Web/API/Document/createTreeWalker)
 - [Mozilla Support: find and install add-ons on Firefox for Android](https://support.mozilla.org/en-US/kb/find-and-install-add-ons-firefox-android)
+- [Firefox Extension Workshop: developing extensions for Firefox for Android](https://extensionworkshop.com/documentation/develop/developing-extensions-for-firefox-for-android/) — official MV3 compatibility warning and Android development guidance; page source date 2023-11-12.
+- [Firefox Extension Workshop: distribute Manifest V2 and V3 extensions](https://extensionworkshop.com/documentation/publish/distribute-manifest-versions/) — confirms that one extension package cannot be both MV2 and MV3; its distribution examples are dated 2023-03-03 and must not be treated as current AMO channel policy without re-verification.
+- [Mozilla Bug 1812125](https://bugzilla.mozilla.org/show_bug.cgi?id=1812125) — Firefox Android host-permission editing limitation.
