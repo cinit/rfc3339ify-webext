@@ -218,7 +218,7 @@ YEAR4       := exactly four ASCII digits, 0001..9999
 HOUR12      := one or two ASCII digits, 1..12
 MINUTE      := exactly two ASCII digits, 00..59
 SECOND      := exactly two ASCII digits, 00..60
-WSP         := ASCII space | tab | CR | LF | form feed | U+00A0
+WSP         := ASCII space | tab | CR | LF | form feed | U+00A0 | U+202F
 SP          := WSP repeated 1..8 times
 OSP         := WSP repeated 0..8 times
 MERIDIEM    := AM | PM | am | pm | a.m. | p.m.
@@ -309,6 +309,7 @@ time12 := HOUR12 ":" MINUTE [":" SECOND] OSP MERIDIEM
 12:00 AM       -> 00:00
 12:00 PM       -> 12:00
 01:00 PM       -> 13:00
+3:05 PM         -> 15:05
 07:59a.m.      -> 07:59
 07:59:60 p.m.  -> 19:59:60
 ```

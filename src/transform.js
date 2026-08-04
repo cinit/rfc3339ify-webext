@@ -65,6 +65,7 @@
       case 0x0d: // CR
       case 0x20: // space
       case 0xa0: // no-break space
+      case 0x202f: // narrow no-break space
         return true;
       default:
         return false;

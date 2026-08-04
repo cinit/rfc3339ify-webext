@@ -31,6 +31,7 @@ const positives = [
   ["12:00 AM", "00:00"],
   ["12:00 PM", "12:00"],
   ["01:00 PM", "13:00"],
+  ["3:05\u202fPM", "15:05"],
   ["01:02:03 AM", "01:02:03"],
   ["07:59AM", "07:59"],
   ["07:59 AM.", "07:59."],
@@ -169,7 +170,7 @@ test("every accepted hour, minute, and meridiem spelling", () => {
 });
 
 test("accepted whitespace set and limits", () => {
-  for (const whitespace of [" ", "\t", "\n", "\r", "\f", "\u00a0"]) {
+  for (const whitespace of [" ", "\t", "\n", "\r", "\f", "\u00a0", "\u202f"]) {
     assert.equal(transformText(`Jan${whitespace}1`), "01-01");
     assert.equal(transformText(`1${whitespace}Jan${whitespace}99`), "??99-01-01");
     assert.equal(transformText(`01:00${whitespace}PM`), "13:00");
